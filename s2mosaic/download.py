@@ -205,8 +205,11 @@ def export_tif(
     profile: Dict[str, Any],
     export_path: Path,
     required_bands: List[str],
+    nodata_value: Union[int, None] = 0,
 ) -> None:
-    profile.update(count=array.shape[0], dtype=array.dtype, nodata=0, compress="lzw")
+    profile.update(
+        count=array.shape[0], dtype=array.dtype, nodata=nodata_value, compress="lzw"
+    )
     with rio.open(export_path, "w", **profile) as dst:
         dst.write(array)
         dst.descriptions = required_bands
@@ -509,9 +512,18 @@ def mosaic(
     )
     if "visual" in required_bands:
         required_bands = ["Red", "Green", "Blue"]
+        nodata_value = None
+    else:
+        nodata_value = 0
 
     if output_dir:
-        export_tif(mosaic, profile, export_path, required_bands)
+        export_tif(
+            array=mosaic,
+            profile=profile,
+            export_path=export_path,
+            required_bands=required_bands,
+            nodata_value=nodata_value,
+        )
         return export_path
 
     return mosaic, profile
