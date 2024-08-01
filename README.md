@@ -15,6 +15,16 @@ S2Mosaic is a Python package for creating cloud-free mosaics from Sentinel-2 sat
 
 We use OmniCloudMask for state-of-the-art cloud and cloud shadow masking. OCM will run significantly faster if an available NVIDIA GPU is present.
 
+## Try in Colab
+
+[![Colab_Button]][Link]
+
+[Link]: https://colab.research.google.com/drive/1-vdAAnpzp_VCotTV07cbSC9iQFiD7DcH?usp=sharing 'Try S2Mosaic In Colab'
+
+[Colab_Button]: https://img.shields.io/badge/Try%20in%20Colab-grey?style=for-the-badge&logo=google-colab
+
+
+
 ## Installation 🛠️
 
 You can install S2Mosaic using pip:
@@ -86,6 +96,11 @@ S2Mosaic provides several options for customizing the mosaic creation process:
 - `ocm_inference_dtype`: Set the data type for OmniCloudMask inference (default: "bf16").
 
 For more detailed information on these options and additional functionality, please refer to the function docstring in the source code.
+
+## Performance Tips 🚀
+- `ocm_batch_size`: If using a GPU, setting this above the default value (1) will speed up cloud masking. In most cases, a value of 4 works well. If you encounter CUDA errors, try using a lower number.
+- `ocm_inference_dtype`: if the device supports it 'bf16' tends to be the fastest option, failing this try 'fp16' then 'fp32'.
+- `sort_method`: Using "valid_data" as the sort method tends to be the fastest option if no_data_threshold is not None.
 
 ## Contributing 🤝
 

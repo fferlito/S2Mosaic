@@ -1,9 +1,13 @@
 from setuptools import find_packages, setup
-from .__version__ import __version__
+import os
+
+version = {}
+with open(os.path.join("s2mosaic", "__version__.py")) as fp:
+    exec(fp.read(), version)
 
 setup(
     name="s2mosaic",
-    version=__version__,
+    version=version["__version__"],
     description="""Python library for making cloud-free Sentinel-2 mosaics""",
     long_description=open("README.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
@@ -28,5 +32,5 @@ setup(
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
     ],
-    package_data={"s2cfmosaic": ["S2_grid/sentinel_2_index.gpkg"]},
+    package_data={"s2mosaic": ["S2_grid/sentinel_2_index.gpkg"]},
 )

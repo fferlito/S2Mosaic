@@ -378,7 +378,7 @@ def mosaic(
     required_bands: List[str] = ["B04", "B03", "B02", "B08"],
     no_data_threshold: Optional[float] = 0.01,
     overwrite: bool = True,
-    ocm_batch_size: int = 6,
+    ocm_batch_size: int = 1,
     ocm_inference_dtype: str = "bf16",
 ) -> Tuple[np.ndarray, Dict[str, Any]]: ...
 
@@ -398,7 +398,7 @@ def mosaic(
     required_bands: List[str] = ["B04", "B03", "B02", "B08"],
     no_data_threshold: Optional[float] = 0.01,
     overwrite: bool = True,
-    ocm_batch_size: int = 6,
+    ocm_batch_size: int = 1,
     ocm_inference_dtype: str = "bf16",
 ) -> Path: ...
 
@@ -417,7 +417,7 @@ def mosaic(
     required_bands: List[str] = ["B04", "B03", "B02", "B08"],
     no_data_threshold: Union[float, None] = 0.01,
     overwrite: bool = True,
-    ocm_batch_size: int = 6,
+    ocm_batch_size: int = 1,
     ocm_inference_dtype: str = "bf16",
 ) -> Union[Tuple[np.ndarray, Dict[str, Any]], Path]:
     """
@@ -443,7 +443,7 @@ def mosaic(
             Defaults to ["B04", "B03", "B02", "B08"] (Red, Green, Blue, NIR).
         no_data_threshold (float, optional): Threshold for no data values. Defaults to 0.01.
         overwrite (bool, optional): Whether to overwrite existing output files. Defaults to True.
-        ocm_batch_size (int, optional): Batch size for OCM inference. Defaults to 6.
+        ocm_batch_size (int, optional): Batch size for OCM inference. Defaults to 1.
         ocm_inference_dtype (str, optional): Data type for OCM inference. Defaults to "bf16".
 
     Returns:
