@@ -1,11 +1,11 @@
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, Union, Optional
+from typing import Any, Dict, List, Tuple, Union, Optional, overload
 from datetime import datetime
 from datetime import date
 from dateutil.relativedelta import relativedelta
 from concurrent.futures import ThreadPoolExecutor
-import pickle
 from functools import partial
+import pkg_resources
 
 import numpy as np
 import pandas as pd
@@ -22,15 +22,8 @@ import geopandas as gpd
 
 
 def get_band(
-    href: str, attempt: int = 0, res: int = 10, cache_download: bool = True
+    href: str, attempt: int = 0, res: int = 10
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
-    if cache_download:
-        cache_dir = Path("cache")
-        cache_dir.mkdir(exist_ok=True)
-        cache_key = cache_dir / f"{href.split('/')[-1]}_{res}.pkl"
-        if cache_key.exists():
-            with open(cache_key, "rb") as f:
-                return pickle.load(f)
     try:
         singed_href = planetary_computer.sign(href)
         spatial_ratio = res / 10
@@ -48,8 +41,7 @@ def get_band(
                 ),
             ).astype(np.uint16)
             result = array, src.profile.copy()
-            if cache_download:
-                pickle.dump(result, open(cache_key, "wb"))
+
             return result
 
     except Exception as e:
@@ -66,11 +58,10 @@ def ocm_cloud_mask(
     item: pystac.Item,
     batch_size: int = 6,
     inference_dtype: str = "bf16",
-    cache_download: bool = True,
 ) -> np.ndarray:
     # download RG+NIR bands at 20m resolution for cloud masking
     required_bands = ["B04", "B03", "B8A"]
-    get_band_20m = partial(get_band, res=20, cache_download=cache_download)
+    get_band_20m = partial(get_band, res=20)
 
     hrefs = [item.assets[band].href for band in required_bands]
 
@@ -95,11 +86,10 @@ def format_progress(current, total, no_data_pct):
 def download_bands_pool(
     sorted_scenes: pd.DataFrame,
     required_bands: List[str],
-    no_data_threshold: float,
+    no_data_threshold: Union[float, None],
     mosaic_method: str = "mean",
     ocm_batch_size: int = 6,
     ocm_inference_dtype: str = "bf16",
-    cache_download: bool = True,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     s2_scene_size = 10980
     pixel_count = s2_scene_size * s2_scene_size
@@ -118,16 +108,14 @@ def download_bands_pool(
         leave=False,
         bar_format="{desc}",
     )
-    get_bands_partial = partial(get_band, res=10, cache_download=cache_download)
+    get_bands_partial = partial(get_band, res=10)
 
     for index, item in enumerate(sorted_scenes["item"].tolist()):
         hrefs = [item.assets[band].href for band in required_bands]
 
-        # Use ThreadPoolExecutor with map to download bands concurrently while preserving order
         with ThreadPoolExecutor(max_workers=len(required_bands)) as executor:
             bands_and_profiles = list(executor.map(get_bands_partial, hrefs))
 
-        # Separate bands and profiles
         bands, profiles = zip(*bands_and_profiles)
 
         if "visual" in required_bands:
@@ -141,14 +129,12 @@ def download_bands_pool(
             item=item,
             batch_size=ocm_batch_size,
             inference_dtype=ocm_inference_dtype,
-            cache_download=cache_download,
         )
         combo_mask = clear_pixels * good_pixels
         good_pixel_tracker += combo_mask
 
         full_scene[:, ~combo_mask] = 0
 
-        # scenes.append(full_scene)
         if mosaic_method == "mean":
             mosaic += full_scene
         elif mosaic_method == "first":
@@ -158,16 +144,19 @@ def download_bands_pool(
         else:
             raise Exception("Invalid mosaic method, must be mean or first")
 
-        # Process the downloaded scene
         no_data_sum = (good_pixel_tracker == 0).sum()
         no_data_pct = (no_data_sum / pixel_count) * 100
         pbar.set_description(
             format_progress(index + 1, len(sorted_scenes), no_data_pct)
         )
-
-        # pbar.desc = f"Downloading scenes: {no_data_sum / (pixel_count) * 100:.2f}% no data remaining"
-        if no_data_sum < (pixel_count) * no_data_threshold:
-            break
+        # if using first or last method, stop if all pixels are filled
+        if mosaic_method != "mean":
+            if no_data_sum == 0:
+                break
+        # if no_data_threshold is set, stop if threshold is reached
+        if no_data_threshold is not None:
+            if no_data_sum < (pixel_count) * no_data_threshold:
+                break
         pbar.update(1)
 
     remaining_scenes = pbar.total - pbar.n
@@ -273,7 +262,9 @@ def sort_items(items: DataFrame, sort_method: str) -> DataFrame:
 
 
 def get_extent_from_grid_id(grid_id: str) -> shapely.geometry.polygon.Polygon:
-    S2_grid_file = Path("S2 grid/sentinel_2_index_shapefile.shp")
+    S2_grid_file = Path(
+        pkg_resources.resource_filename("s2mosaic", "S2_grid/sentinel_2_index.gpkg")
+    )
     assert S2_grid_file.exists()
     S2_grid_gdf = gpd.read_file(S2_grid_file)
     try:
@@ -313,7 +304,7 @@ VALID_MOSAIC_METHODS = {MOSAIC_MEAN, MOSAIC_FIRST}
 def validate_inputs(
     sort_method: str,
     mosaic_method: str,
-    no_data_threshold: float,
+    no_data_threshold: Union[float, None],
     required_bands: List[str],
 ) -> None:
     if sort_method not in VALID_SORT_METHODS:
@@ -324,10 +315,11 @@ def validate_inputs(
         raise ValueError(
             f"Invalid mosaic method: {mosaic_method}. Must be one of {VALID_MOSAIC_METHODS}"
         )
-    if not 0 <= no_data_threshold <= 1:
-        raise ValueError(
-            f"No data threshold must be between 0 and 1, got {no_data_threshold}"
-        )
+    if no_data_threshold is not None:
+        if not (0.0 <= no_data_threshold <= 1.0):
+            raise ValueError(
+                f"No data threshold must be between 0 and 1 or None, got {no_data_threshold}"
+            )
     valid_bands = [
         "AOT",
         "SCL",
@@ -371,6 +363,46 @@ def get_output_path(
     return export_path
 
 
+@overload
+def mosaic(
+    grid_id: str,
+    start_year: int,
+    start_month: int = 1,
+    start_day: int = 1,
+    output_dir: None = None,
+    sort_method: str = "valid_data",
+    mosaic_method: str = "mean",
+    duration_years: int = 0,
+    duration_months: int = 0,
+    duration_days: int = 0,
+    required_bands: List[str] = ["B04", "B03", "B02", "B08"],
+    no_data_threshold: Optional[float] = 0.01,
+    overwrite: bool = True,
+    ocm_batch_size: int = 6,
+    ocm_inference_dtype: str = "bf16",
+) -> Tuple[np.ndarray, Dict[str, Any]]: ...
+
+
+@overload
+def mosaic(
+    grid_id: str,
+    start_year: int,
+    start_month: int = 1,
+    start_day: int = 1,
+    output_dir: Union[str, Path] = ...,
+    sort_method: str = "valid_data",
+    mosaic_method: str = "mean",
+    duration_years: int = 0,
+    duration_months: int = 0,
+    duration_days: int = 0,
+    required_bands: List[str] = ["B04", "B03", "B02", "B08"],
+    no_data_threshold: Optional[float] = 0.01,
+    overwrite: bool = True,
+    ocm_batch_size: int = 6,
+    ocm_inference_dtype: str = "bf16",
+) -> Path: ...
+
+
 def mosaic(
     grid_id: str,
     start_year: int,
@@ -383,11 +415,10 @@ def mosaic(
     duration_months: int = 0,
     duration_days: int = 0,
     required_bands: List[str] = ["B04", "B03", "B02", "B08"],
-    no_data_threshold: float = 0.01,
+    no_data_threshold: Union[float, None] = 0.01,
     overwrite: bool = True,
     ocm_batch_size: int = 6,
     ocm_inference_dtype: str = "bf16",
-    cache_download: bool = True,
 ) -> Union[Tuple[np.ndarray, Dict[str, Any]], Path]:
     """
     Create a Sentinel-2 mosaic for a specified grid and time range.
@@ -414,7 +445,6 @@ def mosaic(
         overwrite (bool, optional): Whether to overwrite existing output files. Defaults to True.
         ocm_batch_size (int, optional): Batch size for OCM inference. Defaults to 6.
         ocm_inference_dtype (str, optional): Data type for OCM inference. Defaults to "bf16".
-        cache_download (bool, optional): Whether to cache downloaded data. Defaults to True.
 
     Returns:
         Union[Tuple[np.ndarray, Dict[str, Any]], Path]: If output_dir is None, returns a tuple
@@ -476,7 +506,6 @@ def mosaic(
         mosaic_method=mosaic_method,
         ocm_batch_size=ocm_batch_size,
         ocm_inference_dtype=ocm_inference_dtype,
-        cache_download=cache_download,
     )
     if "visual" in required_bands:
         required_bands = ["Red", "Green", "Blue"]

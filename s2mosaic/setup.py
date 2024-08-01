@@ -2,14 +2,14 @@ from setuptools import find_packages, setup
 from .__version__ import __version__
 
 setup(
-    name="s2cfmosaic",
+    name="s2mosaic",
     version=__version__,
     description="""Python library for making cloud-free Sentinel-2 mosaics""",
     long_description=open("README.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
     author="Nick Wright",
     author_email="nicholas.wright@dpird.wa.gov.au",
-    url="https://github.com/DPIRD-DMA/S2_CF_Mosaic",
+    url="https://github.com/DPIRD-DMA/S2Mosaic",
     python_requires=">=3.7",
     packages=find_packages(),
     install_requires=[
