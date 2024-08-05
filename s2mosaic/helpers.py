@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, Union, Optional, overload
+from typing import Any, Dict, List, Tuple, Union
 from datetime import datetime
 from datetime import date
 from dateutil.relativedelta import relativedelta
@@ -8,25 +8,36 @@ from functools import partial
 import pkg_resources
 
 import numpy as np
+import rasterio as rio
 import pandas as pd
+from pandas import DataFrame
+import geopandas as gpd
+import shapely
+from scipy import ndimage
+import pickle
+
 import planetary_computer
 import pystac_client
-import rasterio as rio
-import shapely
-from pandas import DataFrame
 from pystac.item_collection import ItemCollection
 import pystac
+
 from tqdm.auto import tqdm
 from omnicloudmask import predict_from_array
-import geopandas as gpd
 
 
 def get_band(
-    href: str, attempt: int = 0, res: int = 10
+    href: str, attempt: int = 0, res: int = 10, debug_cache: bool = False
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     try:
         singed_href = planetary_computer.sign(href)
         spatial_ratio = res / 10
+        if debug_cache:
+            cache_path = Path("cache") / f"{href.split('/')[-1]}_{spatial_ratio}.pkl"
+            cache_path.parent.mkdir(exist_ok=True)
+            if cache_path.exists():
+                with open(cache_path, "rb") as f:
+                    result = pickle.load(f)
+                return result
         if "TCI_10m" in href:
             band_indexes = [1, 2, 3]
         else:
@@ -41,7 +52,9 @@ def get_band(
                 ),
             ).astype(np.uint16)
             result = array, src.profile.copy()
-
+            if debug_cache:
+                with open(cache_path, "wb") as f:
+                    pickle.dump(result, f)
             return result
 
     except Exception as e:
@@ -58,10 +71,11 @@ def ocm_cloud_mask(
     item: pystac.Item,
     batch_size: int = 6,
     inference_dtype: str = "bf16",
-) -> np.ndarray:
+    debug_cache: bool = False,
+) -> Tuple[np.ndarray, np.ndarray]:
     # download RG+NIR bands at 20m resolution for cloud masking
     required_bands = ["B04", "B03", "B8A"]
-    get_band_20m = partial(get_band, res=20)
+    get_band_20m = partial(get_band, res=20, debug_cache=debug_cache)
 
     hrefs = [item.assets[band].href for band in required_bands]
 
@@ -70,17 +84,41 @@ def ocm_cloud_mask(
 
     # Separate bands and profiles
     bands, profiles = zip(*bands_and_profiles)
-    mask = predict_from_array(
-        input_array=np.vstack(bands),
-        batch_size=batch_size,
-        inference_dtype=inference_dtype,
-    )[0]
+    ocm_input = np.vstack(bands)
+    mask = (
+        predict_from_array(
+            input_array=ocm_input,
+            batch_size=batch_size,
+            inference_dtype=inference_dtype,
+        )[0]
+        == 0
+    )
     # interpolate mask back to 10m
-    return mask.repeat(2, axis=0).repeat(2, axis=1) == 0
+    return mask.repeat(2, axis=0).repeat(2, axis=1), ocm_input
 
 
 def format_progress(current, total, no_data_pct):
     return f"Scenes: {current}/{total} | No data: {no_data_pct:.2f}%"
+
+
+def normalise_for_output(
+    mosaic_method: str,
+    mosaic: np.ndarray,
+    good_pixel_tracker: np.ndarray,
+    required_bands: List[str],
+):
+    if mosaic_method == "mean":
+        mosaic = np.divide(
+            mosaic,
+            good_pixel_tracker,
+            out=np.zeros_like(mosaic),
+            where=good_pixel_tracker != 0,
+        )
+    if "visual" in required_bands:
+        mosaic = np.clip(mosaic, 0, 255).astype(np.uint8)
+    else:
+        mosaic = np.clip(mosaic, 0, 65535).astype(np.int16)
+    return mosaic
 
 
 def download_bands_pool(
@@ -90,17 +128,19 @@ def download_bands_pool(
     mosaic_method: str = "mean",
     ocm_batch_size: int = 6,
     ocm_inference_dtype: str = "bf16",
+    debug_cache: bool = False,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     s2_scene_size = 10980
     pixel_count = s2_scene_size * s2_scene_size
     if "visual" in required_bands:
         mosaic = np.zeros((3, s2_scene_size, s2_scene_size)).astype(np.float32)
+
     else:
         mosaic = np.zeros((len(required_bands), s2_scene_size, s2_scene_size)).astype(
             np.float32
         )
 
-    good_pixel_tracker = np.zeros((s2_scene_size, s2_scene_size))
+    good_pixel_tracker = np.zeros((s2_scene_size, s2_scene_size)).astype(np.uint16)
 
     pbar = tqdm(
         total=len(sorted_scenes),
@@ -108,7 +148,7 @@ def download_bands_pool(
         leave=False,
         bar_format="{desc}",
     )
-    get_bands_partial = partial(get_band, res=10)
+    get_bands_partial = partial(get_band, res=10, debug_cache=debug_cache)
 
     for index, item in enumerate(sorted_scenes["item"].tolist()):
         hrefs = [item.assets[band].href for band in required_bands]
@@ -125,15 +165,19 @@ def download_bands_pool(
 
         good_pixels = full_scene.sum(axis=0) > 0
 
-        clear_pixels = ocm_cloud_mask(
+        clear_pixels, ocm_scene = ocm_cloud_mask(
             item=item,
             batch_size=ocm_batch_size,
             inference_dtype=ocm_inference_dtype,
+            debug_cache=debug_cache,
         )
-        combo_mask = clear_pixels * good_pixels
+        combo_mask = (clear_pixels * good_pixels).astype(bool)
+
         good_pixel_tracker += combo_mask
 
         full_scene[:, ~combo_mask] = 0
+        combo_mask_20m = ndimage.zoom(clear_pixels, 0.5, order=0).astype(bool)
+        ocm_scene[:, ~combo_mask_20m] = 0
 
         if mosaic_method == "mean":
             mosaic += full_scene
@@ -149,7 +193,7 @@ def download_bands_pool(
         pbar.set_description(
             format_progress(index + 1, len(sorted_scenes), no_data_pct)
         )
-        # if using first or last method, stop if all pixels are filled
+
         if mosaic_method != "mean":
             if no_data_sum == 0:
                 break
@@ -164,12 +208,12 @@ def download_bands_pool(
     pbar.refresh()
     pbar.close()
 
-    if mosaic_method == "mean":
-        mosaic = mosaic / (good_pixel_tracker + 0.000001)
-    if "visual" in required_bands:
-        mosaic = np.clip(mosaic, 0, 255).astype(np.uint8)
-    else:
-        mosaic = np.clip(mosaic, 0, 65535).astype(np.int16)
+    mosaic = normalise_for_output(
+        mosaic_method=mosaic_method,
+        mosaic=mosaic,
+        good_pixel_tracker=good_pixel_tracker,
+        required_bands=required_bands,
+    )
 
     return mosaic, profiles[-1]
 
@@ -364,166 +408,3 @@ def get_output_path(
         f"{grid_id}_{start_date.strftime('%Y-%m-%d')}_to_{end_date.strftime('%Y-%m-%d')}_{sort_method}_{mosaic_method}_{bands_str}.tif"
     )
     return export_path
-
-
-@overload
-def mosaic(
-    grid_id: str,
-    start_year: int,
-    start_month: int = 1,
-    start_day: int = 1,
-    output_dir: None = None,
-    sort_method: str = "valid_data",
-    mosaic_method: str = "mean",
-    duration_years: int = 0,
-    duration_months: int = 0,
-    duration_days: int = 0,
-    required_bands: List[str] = ["B04", "B03", "B02", "B08"],
-    no_data_threshold: Optional[float] = 0.01,
-    overwrite: bool = True,
-    ocm_batch_size: int = 1,
-    ocm_inference_dtype: str = "bf16",
-) -> Tuple[np.ndarray, Dict[str, Any]]: ...
-
-
-@overload
-def mosaic(
-    grid_id: str,
-    start_year: int,
-    start_month: int = 1,
-    start_day: int = 1,
-    output_dir: Union[str, Path] = ...,
-    sort_method: str = "valid_data",
-    mosaic_method: str = "mean",
-    duration_years: int = 0,
-    duration_months: int = 0,
-    duration_days: int = 0,
-    required_bands: List[str] = ["B04", "B03", "B02", "B08"],
-    no_data_threshold: Optional[float] = 0.01,
-    overwrite: bool = True,
-    ocm_batch_size: int = 1,
-    ocm_inference_dtype: str = "bf16",
-) -> Path: ...
-
-
-def mosaic(
-    grid_id: str,
-    start_year: int,
-    start_month: int = 1,
-    start_day: int = 1,
-    output_dir: Optional[Union[Path, str]] = None,
-    sort_method: str = "valid_data",
-    mosaic_method: str = "mean",
-    duration_years: int = 0,
-    duration_months: int = 0,
-    duration_days: int = 0,
-    required_bands: List[str] = ["B04", "B03", "B02", "B08"],
-    no_data_threshold: Union[float, None] = 0.01,
-    overwrite: bool = True,
-    ocm_batch_size: int = 1,
-    ocm_inference_dtype: str = "bf16",
-) -> Union[Tuple[np.ndarray, Dict[str, Any]], Path]:
-    """
-    Create a Sentinel-2 mosaic for a specified grid and time range.
-
-    This function generates a mosaic from Sentinel-2 satellite imagery based on the provided
-    grid ID and time range. It can either return the mosaic data and metadata or save it as
-    a GeoTIFF file.
-
-    Args:
-        grid_id (str): The ID of the grid area for which to create the mosaic (e.g., "50HMH").
-        start_year (int): The start year of the time range.
-        start_month (int, optional): The start month of the time range. Defaults to 1 (January).
-        start_day (int, optional): The start day of the time range. Defaults to 1.
-        output_dir (Optional[Union[Path, str]], optional): Directory to save the output GeoTIFF.
-            If None, the mosaic is not saved to disk and is returned instead. Defaults to None.
-        sort_method (str, optional): Method to sort scenes. Options are "valid_data", "oldest", or "newest". Defaults to "valid_data".
-        mosaic_method (str, optional): Method to create the mosaic. Options are "mean" or "first". Defaults to "mean".
-        duration_years (int, optional): Duration in years to add to the start date. Defaults to 0.
-        duration_months (int, optional): Duration in months to add to the start date. Defaults to 0.
-        duration_days (int, optional): Duration in days to add to the start date. Defaults to 0.
-        required_bands (List[str], optional): List of required spectral bands.
-            Defaults to ["B04", "B03", "B02", "B08"] (Red, Green, Blue, NIR).
-        no_data_threshold (float, optional): Threshold for no data values. Defaults to 0.01.
-        overwrite (bool, optional): Whether to overwrite existing output files. Defaults to True.
-        ocm_batch_size (int, optional): Batch size for OCM inference. Defaults to 1.
-        ocm_inference_dtype (str, optional): Data type for OCM inference. Defaults to "bf16".
-
-    Returns:
-        Union[Tuple[np.ndarray, Dict[str, Any]], Path]: If output_dir is None, returns a tuple
-        containing the mosaic array and metadata dictionary. If output_dir is provided,
-        returns the path to the saved GeoTIFF file.
-
-    Raises:
-        Exception: If no scenes are found for the specified grid ID and time range.
-
-    Note:
-        - The function uses the STAC API to search for Sentinel-2 scenes.
-        - If 'visual' is included in required_bands, it will be replaced with 'Red', 'Green', 'Blue' in the output.
-        - The time range for scene selection is inclusive of the start date and exclusive of the end date.
-    """
-    bounds = get_extent_from_grid_id(grid_id)
-
-    validate_inputs(sort_method, mosaic_method, no_data_threshold, required_bands)
-
-    start_date, end_date = define_dates(
-        start_year,
-        start_month,
-        start_day,
-        duration_years,
-        duration_months,
-        duration_days,
-    )
-    if output_dir:
-        export_path = get_output_path(
-            grid_id=grid_id,
-            start_date=start_date,
-            end_date=end_date,
-            sort_method=sort_method,
-            mosaic_method=mosaic_method,
-            required_bands=required_bands,
-            output_dir=output_dir,
-        )
-
-    if output_dir:
-        if export_path.exists() and not overwrite:
-            return export_path
-
-    items = search_for_items(
-        bounds=bounds, grid_id=grid_id, start_date=start_date, end_date=end_date
-    )
-
-    if len(items) == 0:
-        raise Exception(
-            f"No scenes found for {grid_id} between {start_date.strftime('%Y-%m-%d')} and {end_date.strftime('%Y-%m-%d')}"
-        )
-
-    items_with_orbits = add_item_info(items)
-
-    sorted_items = sort_items(items=items_with_orbits, sort_method=sort_method)
-
-    mosaic, profile = download_bands_pool(
-        sorted_scenes=sorted_items,
-        required_bands=required_bands,
-        no_data_threshold=no_data_threshold,
-        mosaic_method=mosaic_method,
-        ocm_batch_size=ocm_batch_size,
-        ocm_inference_dtype=ocm_inference_dtype,
-    )
-    if "visual" in required_bands:
-        required_bands = ["Red", "Green", "Blue"]
-        nodata_value = None
-    else:
-        nodata_value = 0
-
-    if output_dir:
-        export_tif(
-            array=mosaic,
-            profile=profile,
-            export_path=export_path,
-            required_bands=required_bands,
-            nodata_value=nodata_value,
-        )
-        return export_path
-
-    return mosaic, profile

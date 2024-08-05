@@ -20,7 +20,7 @@ setup(
         "planetary_computer",
         "pystac_client",
         "geopandas",
-        "omnicloudmask",
+        "omnicloudmask>=1.0.3",
     ],
     classifiers=[
         "Development Status :: 3 - Alpha",
