@@ -3,17 +3,18 @@ from typing import Any, Dict, List, Tuple, Union
 from datetime import datetime
 from datetime import date
 from dateutil.relativedelta import relativedelta
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 import pkg_resources
 
 import numpy as np
 import rasterio as rio
+from rasterio.windows import Window
 import pandas as pd
 from pandas import DataFrame
 import geopandas as gpd
 import shapely
-from scipy import ndimage
+
 import pickle
 
 import planetary_computer
@@ -25,100 +26,59 @@ from tqdm.auto import tqdm
 from omnicloudmask import predict_from_array
 
 
-def get_band(
-    href: str, attempt: int = 0, res: int = 10, debug_cache: bool = False
+def read_in_chunks(
+    href: str,
+    index: int,
+    mask: np.ndarray,
+    chunk_multiplier: int = 4,
+):
+    chunk_size = 512 * chunk_multiplier
+    with rio.open(href) as src:
+        height, width = src.height, src.width
+        all_data = np.zeros((height, width), dtype=np.uint16)
+        for row in range(0, height, chunk_size):
+            for col in range(0, width, chunk_size):
+                chunk_height = min(chunk_size, height - row)
+                chunk_width = min(chunk_size, width - col)
+
+                mask_chunk = mask[row : row + chunk_height, col : col + chunk_width]
+
+                if np.any(mask_chunk):
+                    window = Window(col, row, chunk_width, chunk_height)  # type: ignore
+                    data_chunk = src.read(index, window=window)
+
+                    masked_data = data_chunk * mask_chunk
+                    all_data[row : row + chunk_height, col : col + chunk_width] = (
+                        masked_data
+                    )
+
+        return all_data
+
+
+def get_band_chunk(
+    href_and_index: tuple[str, int],
+    mask: np.ndarray,
+    attempt: int = 0,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
+    href = href_and_index[0]
+    index = href_and_index[1]
     try:
         singed_href = planetary_computer.sign(href)
-        spatial_ratio = res / 10
-        if debug_cache:
-            cache_path = Path("cache") / f"{href.split('/')[-1]}_{spatial_ratio}.pkl"
-            cache_path.parent.mkdir(exist_ok=True)
-            if cache_path.exists():
-                with open(cache_path, "rb") as f:
-                    result = pickle.load(f)
-                return result
-        if "TCI_10m" in href:
-            band_indexes = [1, 2, 3]
-        else:
-            band_indexes = [1]
         with rio.open(singed_href) as src:
-            array = src.read(
-                band_indexes,
-                out_shape=(
-                    len(band_indexes),
-                    int(10980 / spatial_ratio),
-                    int(10980 / spatial_ratio),
-                ),
-            ).astype(np.uint16)
-            result = array, src.profile.copy()
-            if debug_cache:
-                with open(cache_path, "wb") as f:
-                    pickle.dump(result, f)
-            return result
+            array = read_in_chunks(
+                href=singed_href, index=index, mask=mask, chunk_multiplier=4
+            )
+
+            return array, src.profile.copy()
 
     except Exception as e:
         print(e)
         print(f"Failed to open {href}")
         if attempt < 3:
             print(f"Trying again {attempt+1}")
-            return get_band(href, attempt + 1)
+            return get_band_chunk(href_and_index, mask, attempt + 1)
         else:
             raise Exception(f"Failed to open {href}")
-
-
-def ocm_cloud_mask(
-    item: pystac.Item,
-    batch_size: int = 6,
-    inference_dtype: str = "bf16",
-    debug_cache: bool = False,
-) -> Tuple[np.ndarray, np.ndarray]:
-    # download RG+NIR bands at 20m resolution for cloud masking
-    required_bands = ["B04", "B03", "B8A"]
-    get_band_20m = partial(get_band, res=20, debug_cache=debug_cache)
-
-    hrefs = [item.assets[band].href for band in required_bands]
-
-    with ThreadPoolExecutor(max_workers=len(required_bands)) as executor:
-        bands_and_profiles = list(executor.map(get_band_20m, hrefs))
-
-    # Separate bands and profiles
-    bands, profiles = zip(*bands_and_profiles)
-    ocm_input = np.vstack(bands)
-    mask = (
-        predict_from_array(
-            input_array=ocm_input,
-            batch_size=batch_size,
-            inference_dtype=inference_dtype,
-        )[0]
-        == 0
-    )
-    # interpolate mask back to 10m
-    return mask.repeat(2, axis=0).repeat(2, axis=1), ocm_input
-
-
-def format_progress(current, total, no_data_pct):
-    return f"Scenes: {current}/{total} | No data: {no_data_pct:.2f}%"
-
-
-def normalise_for_output(
-    mosaic_method: str,
-    mosaic: np.ndarray,
-    good_pixel_tracker: np.ndarray,
-    required_bands: List[str],
-):
-    if mosaic_method == "mean":
-        mosaic = np.divide(
-            mosaic,
-            good_pixel_tracker,
-            out=np.zeros_like(mosaic),
-            where=good_pixel_tracker != 0,
-        )
-    if "visual" in required_bands:
-        mosaic = np.clip(mosaic, 0, 255).astype(np.uint8)
-    else:
-        mosaic = np.clip(mosaic, 0, 65535).astype(np.int16)
-    return mosaic
 
 
 def download_bands_pool(
@@ -129,16 +89,20 @@ def download_bands_pool(
     ocm_batch_size: int = 6,
     ocm_inference_dtype: str = "bf16",
     debug_cache: bool = False,
+    max_dl_workers: int = 4,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     s2_scene_size = 10980
     pixel_count = s2_scene_size * s2_scene_size
     if "visual" in required_bands:
         mosaic = np.zeros((3, s2_scene_size, s2_scene_size)).astype(np.float32)
+        band_indexes = [1, 2, 3]
+        required_bands = required_bands * 3
 
     else:
         mosaic = np.zeros((len(required_bands), s2_scene_size, s2_scene_size)).astype(
             np.float32
         )
+        band_indexes = [1] * len(required_bands)
 
     good_pixel_tracker = np.zeros((s2_scene_size, s2_scene_size)).astype(np.uint16)
 
@@ -148,36 +112,33 @@ def download_bands_pool(
         leave=False,
         bar_format="{desc}",
     )
-    get_bands_partial = partial(get_band, res=10, debug_cache=debug_cache)
 
     for index, item in enumerate(sorted_scenes["item"].tolist()):
-        hrefs = [item.assets[band].href for band in required_bands]
-
-        with ThreadPoolExecutor(max_workers=len(required_bands)) as executor:
-            bands_and_profiles = list(executor.map(get_bands_partial, hrefs))
-
-        bands, profiles = zip(*bands_and_profiles)
-
-        if "visual" in required_bands:
-            full_scene = np.array(bands[0])
-        else:
-            full_scene = np.vstack(bands)
-
-        good_pixels = full_scene.sum(axis=0) > 0
-
-        clear_pixels, ocm_scene = ocm_cloud_mask(
+        clear_pixels, good_pixels = ocm_cloud_mask(
             item=item,
             batch_size=ocm_batch_size,
             inference_dtype=ocm_inference_dtype,
             debug_cache=debug_cache,
+            max_dl_workers=max_dl_workers,
         )
         combo_mask = (clear_pixels * good_pixels).astype(bool)
-
         good_pixel_tracker += combo_mask
 
-        full_scene[:, ~combo_mask] = 0
-        combo_mask_20m = ndimage.zoom(clear_pixels, 0.5, order=0).astype(bool)
-        ocm_scene[:, ~combo_mask_20m] = 0
+        hrefs_and_indexes = [
+            (item.assets[band].href, band_index)
+            for band, band_index in zip(required_bands, band_indexes)
+        ]
+
+        get_band_chunk_partial = partial(get_band_chunk, mask=combo_mask)
+
+        with ThreadPoolExecutor(max_workers=max_dl_workers) as executor:
+            bands_and_profiles = list(
+                executor.map(get_band_chunk_partial, hrefs_and_indexes)
+            )
+
+        bands, profiles = zip(*bands_and_profiles)
+
+        full_scene = np.array(bands)
 
         if mosaic_method == "mean":
             mosaic += full_scene
@@ -216,6 +177,107 @@ def download_bands_pool(
     )
 
     return mosaic, profiles[-1]
+
+
+def get_full_band(
+    href: str, attempt: int = 0, res: int = 10, debug_cache: bool = False
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    try:
+        singed_href = planetary_computer.sign(href)
+        spatial_ratio = res / 10
+
+        if debug_cache:
+            cache_path = Path("cache") / f"{href.split('/')[-1]}_{spatial_ratio}.pkl"
+            cache_path.parent.mkdir(exist_ok=True)
+            if cache_path.exists():
+                with open(cache_path, "rb") as f:
+                    result = pickle.load(f)
+                return result
+
+        if "TCI_10m" in href:
+            band_indexes = [1, 2, 3]
+        else:
+            band_indexes = [1]
+        with rio.open(singed_href) as src:
+            array = src.read(
+                band_indexes,
+                out_shape=(
+                    len(band_indexes),
+                    int(10980 / spatial_ratio),
+                    int(10980 / spatial_ratio),
+                ),
+            ).astype(np.uint16)
+            result = array, src.profile.copy()
+            if debug_cache:
+                with open(cache_path, "wb") as f:
+                    pickle.dump(result, f)
+            return result
+
+    except Exception as e:
+        print(e)
+        print(f"Failed to open {href}")
+        if attempt < 3:
+            print(f"Trying again {attempt+1}")
+            return get_full_band(href, attempt + 1)
+        else:
+            raise Exception(f"Failed to open {href}")
+
+
+def ocm_cloud_mask(
+    item: pystac.Item,
+    batch_size: int = 6,
+    inference_dtype: str = "bf16",
+    debug_cache: bool = False,
+    max_dl_workers: int = 4,
+) -> Tuple[np.ndarray, np.ndarray]:
+    # download RG+NIR bands at 20m resolution for cloud masking
+    required_bands = ["B04", "B03", "B8A"]
+    get_band_20m = partial(get_full_band, res=20, debug_cache=debug_cache)
+
+    hrefs = [item.assets[band].href for band in required_bands]
+
+    with ThreadPoolExecutor(max_workers=max_dl_workers) as executor:
+        bands_and_profiles = list(executor.map(get_band_20m, hrefs))
+
+    # Separate bands and profiles
+    bands, profiles = zip(*bands_and_profiles)
+    ocm_input = np.vstack(bands)
+    mask = (
+        predict_from_array(
+            input_array=ocm_input,
+            batch_size=batch_size,
+            inference_dtype=inference_dtype,
+        )[0]
+        == 0
+    )
+    # interpolate mask back to 10m
+    return mask.repeat(2, axis=0).repeat(2, axis=1), (ocm_input.sum(axis=0) > 0).repeat(
+        2, axis=0
+    ).repeat(2, axis=1)
+
+
+def format_progress(current, total, no_data_pct):
+    return f"Scenes: {current}/{total} | No data: {no_data_pct:.2f}%"
+
+
+def normalise_for_output(
+    mosaic_method: str,
+    mosaic: np.ndarray,
+    good_pixel_tracker: np.ndarray,
+    required_bands: List[str],
+):
+    if mosaic_method == "mean":
+        mosaic = np.divide(
+            mosaic,
+            good_pixel_tracker,
+            out=np.zeros_like(mosaic),
+            where=good_pixel_tracker != 0,
+        )
+    if "visual" in required_bands:
+        mosaic = np.clip(mosaic, 0, 255).astype(np.uint8)
+    else:
+        mosaic = np.clip(mosaic, 0, 65535).astype(np.int16)
+    return mosaic
 
 
 def add_item_info(items: ItemCollection) -> DataFrame:
