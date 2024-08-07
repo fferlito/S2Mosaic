@@ -101,6 +101,7 @@ For more detailed information on these options and additional functionality, ple
 - `ocm_batch_size`: If using a GPU, setting this above the default value (1) will speed up cloud masking. In most cases, a value of 4 works well. If you encounter CUDA errors, try using a lower number.
 - `ocm_inference_dtype`: if the device supports it 'bf16' tends to be the fastest option, failing this try 'fp16' then 'fp32'.
 - `sort_method`: Using "valid_data" as the sort method tends to be the fastest option if no_data_threshold is not None.
+- `mosaic_method`: Using 'first' can be a lot faster than 'mean' as only valid, non cloudy, new pixels are downloaded.
 
 ## Contributing 🤝
 
