@@ -162,3 +162,4 @@ cython_debug/
 #.idea/
 output/*
 cache/*
+s2mosaic/S2_grid/sentinel_2_index.pkl

@@ -100,6 +100,7 @@ def mosaic(
         overwrite (bool, optional): Whether to overwrite existing output files. Defaults to True.
         ocm_batch_size (int, optional): Batch size for OCM inference. Defaults to 1.
         ocm_inference_dtype (str, optional): Data type for OCM inference. Defaults to "bf16".
+        debug_cache (bool, optional): Whether to cache downloads for faster debugging. Defaults to False.
 
     Returns:
         Union[Tuple[np.ndarray, Dict[str, Any]], Path]: If output_dir is None, returns a tuple
@@ -114,9 +115,14 @@ def mosaic(
         - If 'visual' is included in required_bands, it will be replaced with 'Red', 'Green', 'Blue' in the output.
         - The time range for scene selection is inclusive of the start date and exclusive of the end date.
     """
-    bounds = get_extent_from_grid_id(grid_id)
 
-    validate_inputs(sort_method, mosaic_method, no_data_threshold, required_bands)
+    validate_inputs(
+        sort_method=sort_method,
+        mosaic_method=mosaic_method,
+        no_data_threshold=no_data_threshold,
+        required_bands=required_bands,
+        grid_id=grid_id,
+    )
 
     start_date, end_date = define_dates(
         start_year,
@@ -140,6 +146,8 @@ def mosaic(
     if output_dir:
         if export_path.exists() and not overwrite:
             return export_path
+
+    bounds = get_extent_from_grid_id(grid_id)
 
     items = search_for_items(
         bounds=bounds, grid_id=grid_id, start_date=start_date, end_date=end_date

@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Tuple, Union
 from datetime import datetime
 from datetime import date
 from dateutil.relativedelta import relativedelta
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 import pkg_resources
 
@@ -55,128 +55,43 @@ def read_in_chunks(
         return all_data
 
 
-def get_band_chunk(
+def get_band_with_mask(
     href_and_index: tuple[str, int],
     mask: np.ndarray,
     attempt: int = 0,
+    debug_cache: bool = False,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Download a S2 band in chunks that intersect with the mask"""
     href = href_and_index[0]
     index = href_and_index[1]
+    if debug_cache:
+        cache_path = Path("cache") / f"{href.split('/')[-1]}_10_masked.pkl"
+        cache_path.parent.mkdir(exist_ok=True)
+        if cache_path.exists():
+            with open(cache_path, "rb") as f:
+                result = pickle.load(f)
+            return result
     try:
         singed_href = planetary_computer.sign(href)
         with rio.open(singed_href) as src:
             array = read_in_chunks(
                 href=singed_href, index=index, mask=mask, chunk_multiplier=4
             )
+            result = array, src.profile.copy()
+            if debug_cache:
+                with open(cache_path, "wb") as f:
+                    pickle.dump(result, f)
 
-            return array, src.profile.copy()
+            return result
 
     except Exception as e:
         print(e)
         print(f"Failed to open {href}")
         if attempt < 3:
             print(f"Trying again {attempt+1}")
-            return get_band_chunk(href_and_index, mask, attempt + 1)
+            return get_band_with_mask(href_and_index, mask, attempt + 1)
         else:
             raise Exception(f"Failed to open {href}")
-
-
-def download_bands_pool(
-    sorted_scenes: pd.DataFrame,
-    required_bands: List[str],
-    no_data_threshold: Union[float, None],
-    mosaic_method: str = "mean",
-    ocm_batch_size: int = 6,
-    ocm_inference_dtype: str = "bf16",
-    debug_cache: bool = False,
-    max_dl_workers: int = 4,
-) -> Tuple[np.ndarray, Dict[str, Any]]:
-    s2_scene_size = 10980
-    pixel_count = s2_scene_size * s2_scene_size
-    if "visual" in required_bands:
-        mosaic = np.zeros((3, s2_scene_size, s2_scene_size)).astype(np.float32)
-        band_indexes = [1, 2, 3]
-        required_bands = required_bands * 3
-
-    else:
-        mosaic = np.zeros((len(required_bands), s2_scene_size, s2_scene_size)).astype(
-            np.float32
-        )
-        band_indexes = [1] * len(required_bands)
-
-    good_pixel_tracker = np.zeros((s2_scene_size, s2_scene_size)).astype(np.uint16)
-
-    pbar = tqdm(
-        total=len(sorted_scenes),
-        desc=format_progress(0, len(sorted_scenes), 100.0),
-        leave=False,
-        bar_format="{desc}",
-    )
-
-    for index, item in enumerate(sorted_scenes["item"].tolist()):
-        clear_pixels, good_pixels = ocm_cloud_mask(
-            item=item,
-            batch_size=ocm_batch_size,
-            inference_dtype=ocm_inference_dtype,
-            debug_cache=debug_cache,
-            max_dl_workers=max_dl_workers,
-        )
-        combo_mask = (clear_pixels * good_pixels).astype(bool)
-        good_pixel_tracker += combo_mask
-
-        hrefs_and_indexes = [
-            (item.assets[band].href, band_index)
-            for band, band_index in zip(required_bands, band_indexes)
-        ]
-
-        get_band_chunk_partial = partial(get_band_chunk, mask=combo_mask)
-
-        with ThreadPoolExecutor(max_workers=max_dl_workers) as executor:
-            bands_and_profiles = list(
-                executor.map(get_band_chunk_partial, hrefs_and_indexes)
-            )
-
-        bands, profiles = zip(*bands_and_profiles)
-
-        full_scene = np.array(bands)
-
-        if mosaic_method == "mean":
-            mosaic += full_scene
-        elif mosaic_method == "first":
-            new_valid_pixels = combo_mask & (mosaic == 0)
-            mosaic[new_valid_pixels] = full_scene[new_valid_pixels]
-
-        else:
-            raise Exception("Invalid mosaic method, must be mean or first")
-
-        no_data_sum = (good_pixel_tracker == 0).sum()
-        no_data_pct = (no_data_sum / pixel_count) * 100
-        pbar.set_description(
-            format_progress(index + 1, len(sorted_scenes), no_data_pct)
-        )
-
-        if mosaic_method != "mean":
-            if no_data_sum == 0:
-                break
-        # if no_data_threshold is set, stop if threshold is reached
-        if no_data_threshold is not None:
-            if no_data_sum < (pixel_count) * no_data_threshold:
-                break
-        pbar.update(1)
-
-    remaining_scenes = pbar.total - pbar.n
-    pbar.update(remaining_scenes)
-    pbar.refresh()
-    pbar.close()
-
-    mosaic = normalise_for_output(
-        mosaic_method=mosaic_method,
-        mosaic=mosaic,
-        good_pixel_tracker=good_pixel_tracker,
-        required_bands=required_bands,
-    )
-
-    return mosaic, profiles[-1]
 
 
 def get_full_band(
@@ -223,6 +138,102 @@ def get_full_band(
             raise Exception(f"Failed to open {href}")
 
 
+def download_bands_pool(
+    sorted_scenes: pd.DataFrame,
+    required_bands: List[str],
+    no_data_threshold: Union[float, None],
+    mosaic_method: str = "mean",
+    ocm_batch_size: int = 6,
+    ocm_inference_dtype: str = "bf16",
+    debug_cache: bool = False,
+    max_dl_workers: int = 4,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    s2_scene_size = 10980
+    pixel_count = s2_scene_size * s2_scene_size
+    if "visual" in required_bands:
+        mosaic = np.zeros((3, s2_scene_size, s2_scene_size)).astype(np.float32)
+        band_indexes = [1, 2, 3]
+        required_bands = required_bands * 3
+
+    else:
+        mosaic = np.zeros((len(required_bands), s2_scene_size, s2_scene_size)).astype(
+            np.float32
+        )
+        band_indexes = [1] * len(required_bands)
+
+    good_pixel_tracker = np.zeros((s2_scene_size, s2_scene_size)).astype(np.uint16)
+
+    pbar = tqdm(
+        total=len(sorted_scenes),
+        desc=format_progress(0, len(sorted_scenes), 100.0),
+        leave=False,
+        bar_format="{desc}",
+    )
+
+    for index, item in enumerate(sorted_scenes["item"].tolist()):
+        clear_pixels, good_pixels = ocm_cloud_mask(
+            item=item,
+            batch_size=ocm_batch_size,
+            inference_dtype=ocm_inference_dtype,
+            debug_cache=debug_cache,
+            max_dl_workers=max_dl_workers,
+        )
+        combo_mask = (clear_pixels * good_pixels).astype(bool)
+
+        # if method is first, only download valid, non cloudy pixels that have not been filled, else download all valid non cloudy pixels
+        if mosaic_method == "first":
+            combo_mask = (good_pixel_tracker == 0) & combo_mask
+
+        good_pixel_tracker += combo_mask
+
+        hrefs_and_indexes = [
+            (item.assets[band].href, band_index)
+            for band, band_index in zip(required_bands, band_indexes)
+        ]
+
+        get_band_with_mask_partial = partial(
+            get_band_with_mask, mask=combo_mask, debug_cache=debug_cache
+        )
+
+        with ThreadPoolExecutor(max_workers=max_dl_workers) as executor:
+            bands_and_profiles = list(
+                executor.map(get_band_with_mask_partial, hrefs_and_indexes)
+            )
+
+        bands, profiles = zip(*bands_and_profiles)
+
+        mosaic += np.array(bands)
+
+        no_data_sum = (good_pixel_tracker == 0).sum()
+        no_data_pct = (no_data_sum / pixel_count) * 100
+        pbar.set_description(
+            format_progress(index + 1, len(sorted_scenes), no_data_pct)
+        )
+
+        if mosaic_method == "first":
+            if no_data_sum == 0:
+                break
+        # if no_data_threshold is set, stop if threshold is reached
+        if no_data_threshold is not None:
+            if no_data_sum < (pixel_count) * no_data_threshold:
+                break
+        pbar.update(1)
+
+    remaining_scenes = pbar.total - pbar.n
+    pbar.update(remaining_scenes)
+    pbar.refresh()
+    pbar.close()
+
+    mosaic = normalise_for_output(
+        mosaic_method=mosaic_method,
+        mosaic=mosaic,
+        good_pixel_tracker=good_pixel_tracker,
+        required_bands=required_bands,
+    )
+
+    return mosaic, profiles[-1]
+
+
 def ocm_cloud_mask(
     item: pystac.Item,
     batch_size: int = 6,
@@ -257,7 +268,7 @@ def ocm_cloud_mask(
 
 
 def format_progress(current, total, no_data_pct):
-    return f"Scenes: {current}/{total} | No data: {no_data_pct:.2f}%"
+    return f"Scenes: {current}/{total} | Mosaic currently contains {no_data_pct:.2f}% no data pixels"
 
 
 def normalise_for_output(
@@ -370,19 +381,30 @@ def sort_items(items: DataFrame, sort_method: str) -> DataFrame:
     return items_sorted
 
 
-def get_extent_from_grid_id(grid_id: str) -> shapely.geometry.polygon.Polygon:
+def get_extent_from_grid_id(
+    grid_id: str, use_cache: bool = True
+) -> shapely.geometry.polygon.Polygon:
     S2_grid_file = Path(
         pkg_resources.resource_filename("s2mosaic", "S2_grid/sentinel_2_index.gpkg")
     )
-    assert S2_grid_file.exists()
-    S2_grid_gdf = gpd.read_file(S2_grid_file)
-    try:
-        S2_grid_gdf = S2_grid_gdf[S2_grid_gdf["Name"] == grid_id]
-        if len(S2_grid_gdf) != 1:
-            raise Exception(f"Grid {grid_id} not found")
-        return S2_grid_gdf.iloc[0].geometry.buffer(-0.05)
-    except Exception:
-        raise Exception(f"Grid {grid_id} not found")
+    S2_grid_file_cache = S2_grid_file.with_suffix(".pkl")
+
+    if S2_grid_file_cache.exists() and use_cache:
+        with open(S2_grid_file_cache, "rb") as f:
+            S2_grid_gdf = pickle.load(f)
+    else:
+        assert S2_grid_file.exists()
+        S2_grid_gdf = gpd.read_file(S2_grid_file)
+        with open(S2_grid_file_cache, "wb") as f:
+            pickle.dump(S2_grid_gdf, f)
+
+    S2_grid_gdf = S2_grid_gdf[S2_grid_gdf["Name"] == grid_id]
+    if len(S2_grid_gdf) != 1:
+        raise ValueError(
+            f"Grid {grid_id} not found. It should be in the format '50HMH'. "
+            "For more info on the S2 grid system visit https://sentiwiki.copernicus.eu/web/s2-products"
+        )
+    return S2_grid_gdf.iloc[0].geometry.buffer(-0.05)
 
 
 def define_dates(
@@ -415,7 +437,13 @@ def validate_inputs(
     mosaic_method: str,
     no_data_threshold: Union[float, None],
     required_bands: List[str],
+    grid_id: str,
 ) -> None:
+    if not grid_id.isalnum() or not grid_id.isupper():
+        raise ValueError(
+            f"Grid {grid_id} is invalid. It should be in the format '50HMH'. "
+            "For more info on the S2 grid system visit https://sentiwiki.copernicus.eu/web/s2-products"
+        )
     if sort_method not in VALID_SORT_METHODS:
         raise ValueError(
             f"Invalid sort method: {sort_method}. Must be one of {VALID_SORT_METHODS}"
