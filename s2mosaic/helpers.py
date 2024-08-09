@@ -8,6 +8,7 @@ from functools import partial
 import pkg_resources
 
 import numpy as np
+import scipy
 import rasterio as rio
 from rasterio.windows import Window
 import pandas as pd
@@ -35,6 +36,11 @@ def read_in_chunks(
     chunk_size = 512 * chunk_multiplier
     with rio.open(href) as src:
         height, width = src.height, src.width
+
+        mask = scipy.ndimage.zoom(
+            mask, (height / mask.shape[0], width / mask.shape[1]), order=0
+        )
+
         all_data = np.zeros((height, width), dtype=np.uint16)
         for row in range(0, height, chunk_size):
             for col in range(0, width, chunk_size):
@@ -200,7 +206,16 @@ def download_bands_pool(
                 executor.map(get_band_with_mask_partial, hrefs_and_indexes)
             )
 
-        bands, profiles = zip(*bands_and_profiles)
+        bands = []
+
+        for band, profile in bands_and_profiles:
+            bands.append(
+                scipy.ndimage.zoom(
+                    band,
+                    (s2_scene_size / band.shape[0], s2_scene_size / band.shape[1]),
+                    order=0,
+                )
+            )
 
         mosaic += np.array(bands)
 
@@ -231,7 +246,7 @@ def download_bands_pool(
         required_bands=required_bands,
     )
 
-    return mosaic, profiles[-1]
+    return mosaic, profile
 
 
 def ocm_cloud_mask(
