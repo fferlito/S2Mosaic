@@ -1,30 +1,26 @@
+import pickle
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Union
-from datetime import datetime
-from datetime import date
-from dateutil.relativedelta import relativedelta
-from concurrent.futures import ThreadPoolExecutor
-from functools import partial
-import pkg_resources
 
-import numpy as np
-import scipy
-import rasterio as rio
-from rasterio.windows import Window
-import pandas as pd
-from pandas import DataFrame
 import geopandas as gpd
-import shapely
-
-import pickle
-
+import numpy as np
+import pandas as pd
+import pkg_resources
 import planetary_computer
-import pystac_client
-from pystac.item_collection import ItemCollection
 import pystac
-
-from tqdm.auto import tqdm
+import pystac_client
+import rasterio as rio
+import scipy
+import shapely
+from dateutil.relativedelta import relativedelta
 from omnicloudmask import predict_from_array
+from pandas import DataFrame
+from pystac.item_collection import ItemCollection
+from rasterio.windows import Window
+from tqdm.auto import tqdm
 
 
 def read_in_chunks(
@@ -249,6 +245,15 @@ def download_bands_pool(
     return mosaic, profile
 
 
+def get_valid_mask(bands: np.ndarray, dilation_count: int = 4) -> np.ndarray:
+    # create mask to remove pixels with no data, add dilation to remove edge pixels
+    no_data = (bands.sum(axis=0) == 0).astype(np.uint8)
+    # erode mask to remove edge pixels
+    if dilation_count > 0:
+        no_data = scipy.ndimage.binary_dilation(no_data, iterations=dilation_count)
+    return ~no_data
+
+
 def ocm_cloud_mask(
     item: pystac.Item,
     batch_size: int = 6,
@@ -268,6 +273,8 @@ def ocm_cloud_mask(
     # Separate bands and profiles
     bands, profiles = zip(*bands_and_profiles)
     ocm_input = np.vstack(bands)
+
+    # no_data_mask = get_no_data_mask()
     mask = (
         predict_from_array(
             input_array=ocm_input,
@@ -277,9 +284,10 @@ def ocm_cloud_mask(
         == 0
     )
     # interpolate mask back to 10m
-    return mask.repeat(2, axis=0).repeat(2, axis=1), (ocm_input.sum(axis=0) > 0).repeat(
-        2, axis=0
-    ).repeat(2, axis=1)
+    mask = mask.repeat(2, axis=0).repeat(2, axis=1)
+    valid_mask = get_valid_mask(ocm_input)
+    valid_mask = valid_mask.repeat(2, axis=0).repeat(2, axis=1)
+    return mask, valid_mask
 
 
 def format_progress(current, total, no_data_pct):

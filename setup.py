@@ -1,5 +1,6 @@
-from setuptools import find_packages, setup
 import os
+
+from setuptools import find_packages, setup
 
 version = {}
 with open(os.path.join("s2mosaic", "__version__.py")) as fp:
@@ -14,7 +15,7 @@ setup(
     author="Nick Wright",
     author_email="nicholas.wright@dpird.wa.gov.au",
     url="https://github.com/DPIRD-DMA/S2Mosaic",
-    python_requires=">=3.7",
+    python_requires=">=3.9",
     packages=find_packages(),
     install_requires=[
         "planetary_computer",
@@ -26,8 +27,6 @@ setup(
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Developers",
         "License :: OSI Approved :: MIT License",
-        "Programming Language :: Python :: 3.7",
-        "Programming Language :: Python :: 3.8",
         "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",

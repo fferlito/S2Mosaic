@@ -11,6 +11,11 @@ S2Mosaic is a Python package for creating cloud-free mosaics from Sentinel-2 sat
 - State-of-the-art cloud masking using the OmniCloudMask library.
 - Export mosaics as GeoTIFF files or return as NumPy arrays.
 
+## Changelog 📝
+### Version 0.1.9:
+    * Added a slight dilation to the no data mask to remove diagonal no data pixels from scene edges.
+
+
 ## Note 📝
 
 We use OmniCloudMask for state-of-the-art cloud and cloud shadow masking. OCM will run significantly faster if an available NVIDIA GPU is present.
