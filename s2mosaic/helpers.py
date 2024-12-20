@@ -1,3 +1,4 @@
+import logging
 import pickle
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
@@ -143,6 +144,7 @@ def get_full_band(
 def download_bands_pool(
     sorted_scenes: pd.DataFrame,
     required_bands: List[str],
+    coverage_mask: np.ndarray,
     no_data_threshold: Union[float, None],
     mosaic_method: str = "mean",
     ocm_batch_size: int = 6,
@@ -151,7 +153,10 @@ def download_bands_pool(
     max_dl_workers: int = 4,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     s2_scene_size = 10980
-    pixel_count = s2_scene_size * s2_scene_size
+    possible_pixel_count = coverage_mask.sum()
+
+    logging.info(f"Possible pixel count: {possible_pixel_count}")
+
     if "visual" in required_bands:
         mosaic = np.zeros((3, s2_scene_size, s2_scene_size)).astype(np.float32)
         band_indexes = [1, 2, 3]
@@ -215,8 +220,13 @@ def download_bands_pool(
 
         mosaic += np.array(bands)
 
-        no_data_sum = (good_pixel_tracker == 0).sum()
-        no_data_pct = (no_data_sum / pixel_count) * 100
+        compleated_of_possible = coverage_mask * (good_pixel_tracker != 0)
+        no_data_sum = coverage_mask.sum() - compleated_of_possible.sum()
+        logging.info(f"No data sum: {no_data_sum}")
+
+        no_data_pct = (1 - (compleated_of_possible.sum() / possible_pixel_count)) * 100
+        logging.info(f"No data pct: {no_data_pct}")
+
         pbar.set_description(
             format_progress(index + 1, len(sorted_scenes), no_data_pct)
         )
@@ -226,7 +236,7 @@ def download_bands_pool(
                 break
         # if no_data_threshold is set, stop if threshold is reached
         if no_data_threshold is not None:
-            if no_data_sum < (pixel_count) * no_data_threshold:
+            if no_data_sum < (possible_pixel_count * no_data_threshold):
                 break
         pbar.update(1)
 
@@ -427,7 +437,7 @@ def get_extent_from_grid_id(
             f"Grid {grid_id} not found. It should be in the format '50HMH'. "
             "For more info on the S2 grid system visit https://sentiwiki.copernicus.eu/web/s2-products"
         )
-    return S2_grid_gdf.iloc[0].geometry.buffer(-0.05)
+    return S2_grid_gdf.iloc[0].geometry
 
 
 def define_dates(

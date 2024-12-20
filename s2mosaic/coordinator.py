@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union, overload
 
 import numpy as np
 
+from .frequent_coverage import get_frequent_coverage
 from .helpers import (
     add_item_info,
     define_dates,
@@ -151,13 +152,19 @@ def mosaic(
     bounds = get_extent_from_grid_id(grid_id)
 
     items = search_for_items(
-        bounds=bounds, grid_id=grid_id, start_date=start_date, end_date=end_date
+        bounds=bounds.buffer(-0.05),
+        grid_id=grid_id,
+        start_date=start_date,
+        end_date=end_date,
     )
 
     if len(items) == 0:
         raise Exception(
             f"No scenes found for {grid_id} between {start_date.strftime('%Y-%m-%d')} and {end_date.strftime('%Y-%m-%d')}"
         )
+
+    # for scenes with only partial S2 coverage work out which pixels are covered
+    coverage_mask = get_frequent_coverage(scene_bounds=bounds, scenes=items)
 
     items_with_orbits = add_item_info(items)
 
@@ -171,6 +178,7 @@ def mosaic(
         ocm_batch_size=ocm_batch_size,
         ocm_inference_dtype=ocm_inference_dtype,
         debug_cache=debug_cache,
+        coverage_mask=coverage_mask,
     )
     if "visual" in required_bands:
         required_bands = ["Red", "Green", "Blue"]

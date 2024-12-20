@@ -163,3 +163,4 @@ cython_debug/
 output/*
 cache/*
 s2mosaic/S2_grid/sentinel_2_index.pkl
+*.DS_Store
