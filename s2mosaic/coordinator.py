@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union, overload
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union, overload
 
 import numpy as np
 
@@ -25,6 +25,7 @@ def mosaic(
     start_day: int = 1,
     output_dir: None = None,
     sort_method: str = "valid_data",
+    sort_function: Optional[Callable] = None,
     mosaic_method: str = "mean",
     duration_years: int = 0,
     duration_months: int = 0,
@@ -46,6 +47,7 @@ def mosaic(
     start_day: int = 1,
     output_dir: Union[str, Path] = ...,
     sort_method: str = "valid_data",
+    sort_function: Optional[Callable] = None,
     mosaic_method: str = "mean",
     duration_years: int = 0,
     duration_months: int = 0,
@@ -66,6 +68,7 @@ def mosaic(
     start_day: int = 1,
     output_dir: Optional[Union[Path, str]] = None,
     sort_method: str = "valid_data",
+    sort_function: Optional[Callable] = None,
     mosaic_method: str = "mean",
     duration_years: int = 0,
     duration_months: int = 0,
@@ -117,6 +120,8 @@ def mosaic(
         - If 'visual' is included in required_bands, it will be replaced with 'Red', 'Green', 'Blue' in the output.
         - The time range for scene selection is inclusive of the start date and exclusive of the end date.
     """
+    if sort_function:
+        sort_method = "custom"
 
     validate_inputs(
         sort_method=sort_method,
@@ -168,7 +173,10 @@ def mosaic(
 
     items_with_orbits = add_item_info(items)
 
-    sorted_items = sort_items(items=items_with_orbits, sort_method=sort_method)
+    if not sort_function:
+        sorted_items = sort_items(items=items_with_orbits, sort_method=sort_method)
+    else:
+        sorted_items = sort_function(items=items_with_orbits)
 
     mosaic, profile = download_bands_pool(
         sorted_scenes=sorted_items,
