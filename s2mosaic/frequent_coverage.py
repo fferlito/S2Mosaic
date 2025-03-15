@@ -27,7 +27,9 @@ def get_raster_coverage(
 ):
     scene_gdf = gpd.GeoDataFrame(
         [scene_bounds], geometry=[scene_bounds], crs="EPSG:4326"
-    ).to_crs(f"EPSG:{local_crs}")  # type: ignore
+    ).to_crs(
+        f"EPSG:{local_crs}"
+    )  # type: ignore
     coverage_gdf_local = coverage_gdf.to_crs(f"EPSG:{local_crs}")
 
     coverage_gdf_local["geometry"] = coverage_gdf_local.buffer(0)  # type: ignore
@@ -57,7 +59,12 @@ def get_frequent_coverage(
     scenes_list = list(scenes)
     logging.info(f"Calculating total coverage for {len(scenes_list)} scenes")
 
-    local_crs = scenes_list[0].properties["proj:epsg"]
+    try:
+        local_crs = scenes_list[0].properties["proj:epsg"]
+    except KeyError:
+        local_crs = scenes_list[0].properties["proj:code"]
+        local_crs = int(local_crs.split(":")[-1])
+
     logging.info(f"Using local CRS: EPSG:{local_crs}")
 
     coverage_gdf = get_coverage(scenes_list)
