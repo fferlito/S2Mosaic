@@ -366,13 +366,22 @@ def export_tif(
 
 
 def search_for_items(
-    bounds, grid_id: str, start_date: date, end_date: date
+    bounds,
+    grid_id: str,
+    start_date: date,
+    end_date: date,
+    additional_query: Dict[str, Any],
 ) -> ItemCollection:
+
+    base_query = {"s2:mgrs_tile": {"eq": grid_id}}
+    if additional_query:
+        base_query.update(additional_query)
+
     query = {
         "collections": ["sentinel-2-l2a"],
         "intersects": shapely.to_geojson(bounds),
         "datetime": f"{start_date.isoformat()}Z/{end_date.isoformat()}Z",
-        "query": {"s2:mgrs_tile": {"eq": grid_id}},
+        "query": base_query,
     }
 
     catalog = pystac_client.Client.open(
@@ -414,30 +423,27 @@ def sort_items(items: DataFrame, sort_method: str) -> DataFrame:
     return items_sorted
 
 
-def get_extent_from_grid_id(
-    grid_id: str, use_cache: bool = True
-) -> shapely.geometry.polygon.Polygon:
+def get_extent_from_grid_id(grid_id: str) -> shapely.geometry.polygon.Polygon:
     S2_grid_file = Path(
-        pkg_resources.resource_filename("s2mosaic", "S2_grid/sentinel_2_index.gpkg")
+        pkg_resources.resource_filename("s2mosaic", "S2_grid/sentinel_2_index.gpkg")  # type: ignore
     )
-    S2_grid_file_cache = S2_grid_file.with_suffix(".pkl")
+    # Use SQLite query to filter by Name directly
+    query = f"SELECT * FROM sentinel_2_index WHERE Name = '{grid_id}'"
 
-    if S2_grid_file_cache.exists() and use_cache:
-        with open(S2_grid_file_cache, "rb") as f:
-            S2_grid_gdf = pickle.load(f)
-    else:
-        assert S2_grid_file.exists()
-        S2_grid_gdf = gpd.read_file(S2_grid_file)
-        with open(S2_grid_file_cache, "wb") as f:
-            pickle.dump(S2_grid_gdf, f)
+    try:
+        # Read only the matching row directly from the gpkg
+        grid_entry = gpd.read_file(S2_grid_file, sql=query)
 
-    S2_grid_gdf = S2_grid_gdf[S2_grid_gdf["Name"] == grid_id]
-    if len(S2_grid_gdf) != 1:
-        raise ValueError(
-            f"Grid {grid_id} not found. It should be in the format '50HMH'. "
-            "For more info on the S2 grid system visit https://sentiwiki.copernicus.eu/web/s2-products"
-        )
-    return S2_grid_gdf.iloc[0].geometry
+        if len(grid_entry) != 1:
+            raise ValueError(
+                f"Grid {grid_id} not found. It should be in the format '50HMH'. "
+                "For more info on the S2 grid system visit https://sentiwiki.copernicus.eu/web/s2-products"
+            )
+        return grid_entry.iloc[0].geometry
+
+    except Exception as e:
+        logging.error(f"Error reading grid entry: {e}")
+        raise
 
 
 def define_dates(
