@@ -36,6 +36,7 @@ def mosaic(
     ocm_batch_size: int = 1,
     ocm_inference_dtype: str = "bf16",
     debug_cache: bool = False,
+    additional_query: Dict[str, Any] = {"eo:cloud_cover": {"lt": 100}},
 ) -> Tuple[np.ndarray, Dict[str, Any]]: ...
 
 
@@ -58,6 +59,7 @@ def mosaic(
     ocm_batch_size: int = 1,
     ocm_inference_dtype: str = "bf16",
     debug_cache: bool = False,
+    additional_query: Dict[str, Any] = {"eo:cloud_cover": {"lt": 100}},
 ) -> Path: ...
 
 
