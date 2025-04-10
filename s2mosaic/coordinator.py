@@ -79,6 +79,7 @@ def mosaic(
     ocm_batch_size: int = 1,
     ocm_inference_dtype: str = "bf16",
     debug_cache: bool = False,
+    additional_query: Dict[str, Any] = {"eo:cloud_cover": {"lt": 100}},
 ) -> Union[Tuple[np.ndarray, Dict[str, Any]], Path]:
     """
     Create a Sentinel-2 mosaic for a specified grid and time range.
@@ -95,6 +96,7 @@ def mosaic(
         output_dir (Optional[Union[Path, str]], optional): Directory to save the output GeoTIFF.
             If None, the mosaic is not saved to disk and is returned instead. Defaults to None.
         sort_method (str, optional): Method to sort scenes. Options are "valid_data", "oldest", or "newest". Defaults to "valid_data".
+        sort_function (Callable, optional): Custom sorting function. If provided, overrides sort_method.
         mosaic_method (str, optional): Method to create the mosaic. Options are "mean" or "first". Defaults to "mean".
         duration_years (int, optional): Duration in years to add to the start date. Defaults to 0.
         duration_months (int, optional): Duration in months to add to the start date. Defaults to 0.
@@ -106,6 +108,8 @@ def mosaic(
         ocm_batch_size (int, optional): Batch size for OCM inference. Defaults to 1.
         ocm_inference_dtype (str, optional): Data type for OCM inference. Defaults to "bf16".
         debug_cache (bool, optional): Whether to cache downloads for faster debugging. Defaults to False.
+        additional_query (Dict[str, Any], optional): Additional query parameters for STAC API.
+            Defaults to {"eo:cloud_cover": {"lt": 100}}.
 
     Returns:
         Union[Tuple[np.ndarray, Dict[str, Any]], Path]: If output_dir is None, returns a tuple
@@ -161,6 +165,7 @@ def mosaic(
         grid_id=grid_id,
         start_date=start_date,
         end_date=end_date,
+        additional_query=additional_query,
     )
 
     if len(items) == 0:
