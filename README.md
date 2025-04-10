@@ -102,6 +102,7 @@ S2Mosaic provides several options for customizing the mosaic creation process:
 - `no_data_threshold`: Set the threshold for considering a pixel as no-data. Set to None to process all scenes.
 - `ocm_batch_size`: Set the batch size for OmniCloudMask inference (default: 6).
 - `ocm_inference_dtype`: Set the data type for OmniCloudMask inference (default: "bf16").
+- `additional_query`: Set additional query filters such as {"eo:cloud_cover": {"lt": 80}}
 
 For more detailed information on these options and additional functionality, please refer to the function docstring in the source code.
 
