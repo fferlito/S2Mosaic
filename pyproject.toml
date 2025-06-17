@@ -1,0 +1,22 @@
+[project]
+name = "s2mosaic"
+authors = [{name = "Nick Wright", email = "nicholas.wright@dpird.wa.gov.au"}]
+dynamic = ["version"]
+description = "Python library for making cloud-free Sentinel-2 mosaics"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "geopandas>=1.0.3",
+    "omnicloudmask>=1.0.3",
+    "planetary-computer>=1.0.0",
+    "pystac-client>=0.8.6",
+]
+
+[tool.setuptools.dynamic]
+version = {attr = "s2mosaic.__version__"}
+
+[project.urls]
+Homepage = "https://github.com/DPIRD-DMA/S2Mosaic"
+
+[tool.setuptools.package-data]
+omnicloudmask = ["S2_grid/sentinel_2_index.gpkg"]
