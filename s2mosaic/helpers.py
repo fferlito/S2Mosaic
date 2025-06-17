@@ -23,6 +23,8 @@ from pystac.item_collection import ItemCollection
 from rasterio.windows import Window
 from tqdm.auto import tqdm
 
+from .mosaic_methods import calculate_median_mosaic_chunked
+
 
 def read_in_chunks(
     href: str,
@@ -68,7 +70,7 @@ def get_band_with_mask(
     href = href_and_index[0]
     index = href_and_index[1]
     if debug_cache:
-        cache_path = Path("cache") / f"{href.split('/')[-1]}_10_masked.pkl"
+        cache_path = Path("cache") / f"{href.split('/')[-1]}_{index}_10_masked.pkl"
         cache_path.parent.mkdir(exist_ok=True)
         if cache_path.exists():
             with open(cache_path, "rb") as f:
@@ -152,21 +154,28 @@ def download_bands_pool(
     debug_cache: bool = False,
     max_dl_workers: int = 4,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
+
     s2_scene_size = 10980
     possible_pixel_count = coverage_mask.sum()
 
     logging.info(f"Possible pixel count: {possible_pixel_count}")
 
     if "visual" in required_bands:
-        mosaic = np.zeros((3, s2_scene_size, s2_scene_size)).astype(np.float32)
+        band_count = 3
         band_indexes = [1, 2, 3]
         required_bands = required_bands * 3
 
     else:
-        mosaic = np.zeros((len(required_bands), s2_scene_size, s2_scene_size)).astype(
-            np.float32
-        )
+        band_count = len(required_bands)
         band_indexes = [1] * len(required_bands)
+
+    if mosaic_method in ["median"]:
+        # For median, we need to store all values for each pixel
+        all_scene_data = []
+        valid_pixel_masks = []
+    else:
+        # For mean and first, use the existing approach
+        mosaic = np.zeros((band_count, s2_scene_size, s2_scene_size)).astype(np.float32)
 
     good_pixel_tracker = np.zeros((s2_scene_size, s2_scene_size)).astype(np.uint16)
 
@@ -218,13 +227,22 @@ def download_bands_pool(
                 )
             )
 
-        mosaic += np.array(bands)
+        scene_data = np.array(bands)
 
-        compleated_of_possible = coverage_mask * (good_pixel_tracker != 0)
-        no_data_sum = coverage_mask.sum() - compleated_of_possible.sum()
+        # Handle data accumulation based on method
+        if mosaic_method == "median":
+            # Store the scene data and mask for later median calculation
+            all_scene_data.append(scene_data)
+            valid_pixel_masks.append(combo_mask)
+        else:
+            # Existing logic for mean and first
+            mosaic += scene_data
+
+        completed_of_possible = coverage_mask * (good_pixel_tracker != 0)
+        no_data_sum = coverage_mask.sum() - completed_of_possible.sum()
         logging.info(f"No data sum: {no_data_sum}")
 
-        no_data_pct = (1 - (compleated_of_possible.sum() / possible_pixel_count)) * 100
+        no_data_pct = (1 - (completed_of_possible.sum() / possible_pixel_count)) * 100
         logging.info(f"No data pct: {no_data_pct}")
 
         pbar.set_description(
@@ -245,10 +263,24 @@ def download_bands_pool(
     pbar.refresh()
     pbar.close()
 
+    if mosaic_method in ["median"]:
+        mosaic = calculate_median_mosaic_chunked(
+            all_scene_data,
+            valid_pixel_masks,
+            band_count,
+            s2_scene_size,
+        )
+
+    if mosaic_method == "mean":
+        mosaic = np.divide(
+            mosaic,
+            good_pixel_tracker,
+            out=np.zeros_like(mosaic),
+            where=good_pixel_tracker != 0,
+        )
+
     mosaic = normalise_for_output(
-        mosaic_method=mosaic_method,
         mosaic=mosaic,
-        good_pixel_tracker=good_pixel_tracker,
         required_bands=required_bands,
     )
 
@@ -281,7 +313,7 @@ def ocm_cloud_mask(
         bands_and_profiles = list(executor.map(get_band_20m, hrefs))
 
     # Separate bands and profiles
-    bands, profiles = zip(*bands_and_profiles)
+    bands, _ = zip(*bands_and_profiles)
     ocm_input = np.vstack(bands)
 
     # no_data_mask = get_no_data_mask()
@@ -305,18 +337,9 @@ def format_progress(current, total, no_data_pct):
 
 
 def normalise_for_output(
-    mosaic_method: str,
     mosaic: np.ndarray,
-    good_pixel_tracker: np.ndarray,
     required_bands: List[str],
 ):
-    if mosaic_method == "mean":
-        mosaic = np.divide(
-            mosaic,
-            good_pixel_tracker,
-            out=np.zeros_like(mosaic),
-            where=good_pixel_tracker != 0,
-        )
     if "visual" in required_bands:
         mosaic = np.clip(mosaic, 0, 255).astype(np.uint8)
     else:
@@ -467,9 +490,10 @@ SORT_NEWEST = "newest"
 SORT_CUSTOM = "custom"
 MOSAIC_MEAN = "mean"
 MOSAIC_FIRST = "first"
+MOSAIC_MEDIAN = "median"
 
 VALID_SORT_METHODS = {SORT_VALID_DATA, SORT_OLDEST, SORT_NEWEST, SORT_CUSTOM}
-VALID_MOSAIC_METHODS = {MOSAIC_MEAN, MOSAIC_FIRST}
+VALID_MOSAIC_METHODS = {MOSAIC_MEAN, MOSAIC_FIRST, MOSAIC_MEDIAN}
 
 
 def validate_inputs(
