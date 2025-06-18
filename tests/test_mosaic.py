@@ -4,6 +4,13 @@ import tempfile
 import time
 from pathlib import Path
 import numpy as np
+import sys
+from pathlib import Path
+
+
+# Add the project root to the Python path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
 
 from s2mosaic import mosaic
 
@@ -58,23 +65,23 @@ class TestMosaicInputValidation:
     
     def test_percentile_without_percentile_method(self):
         """Test that percentile parameter requires percentile method"""
-        with pytest.raises(ValueError, match="Percentile is only valid for percentile mosaic method"):
-            mosaic("50HMH", 2023, mosaic_method="mean", percentile=50)
+        with pytest.raises(ValueError, match="percentile_value is only valid for percentile mosaic method"):
+            mosaic("50HMH", 2023, mosaic_method="mean", percentile_value=50)
     
     def test_percentile_method_without_percentile(self):
         """Test that percentile method requires percentile parameter"""
-        with pytest.raises(ValueError, match="Percentile must be provided for percentile mosaic method"):
+        with pytest.raises(ValueError, match="percentile_value must be provided for percentile mosaic method"):
             mosaic("50HMH", 2023, mosaic_method="percentile")
     
     def test_invalid_percentile_negative(self):
         """Test that negative percentile values are rejected"""
-        with pytest.raises(ValueError, match="Percentile must be between 0 and 100"):
-            mosaic("50HMH", 2023, mosaic_method="percentile", percentile=-10)
+        with pytest.raises(ValueError, match="percentile_value must be between 0 and 100"):
+            mosaic("50HMH", 2023, mosaic_method="percentile", percentile_value=-10)
     
     def test_invalid_percentile_greater_than_100(self):
         """Test that percentile values > 100 are rejected"""
-        with pytest.raises(ValueError, match="Percentile must be between 0 and 100"):
-            mosaic("50HMH", 2023, mosaic_method="percentile", percentile=150)
+        with pytest.raises(ValueError, match="percentile_value must be between 0 and 100"):
+            mosaic("50HMH", 2023, mosaic_method="percentile", percentile_value=150)
 
 
 class TestMosaicValidInputs:
@@ -112,7 +119,7 @@ class TestMosaicValidInputs:
     def test_valid_percentile_method(self):
         """Test that percentile method with valid percentile is accepted"""
         try:
-            mosaic("50HMH", 2023, mosaic_method="percentile", percentile=50)
+            mosaic("50HMH", 2023, mosaic_method="percentile", percentile_value=50)
         except Exception as e:
             assert "Invalid mosaic method" not in str(e)
             assert "Percentile" not in str(e) or "invalid" not in str(e).lower()
@@ -353,7 +360,7 @@ class TestMosaicEndToEnd:
                 start_day=1,
                 duration_days=7,
                 mosaic_method="percentile",
-                percentile=percentile,
+                percentile_value=percentile,
                 debug_cache=True,
                 required_bands=["B04"]
             )
