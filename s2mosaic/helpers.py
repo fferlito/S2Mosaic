@@ -45,7 +45,7 @@ def download_bands_pool(
     ocm_inference_dtype: str = "bf16",
     debug_cache: bool = False,
     max_dl_workers: int = 4,
-    percentile: float | None = 50.0,
+    percentile_value: float | None = 50.0,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
 
     s2_scene_size = 10980
@@ -159,7 +159,7 @@ def download_bands_pool(
     pbar.close()
 
     if mosaic_method in ["percentile"]:
-        if percentile is None:
+        if percentile_value is None:
             raise ValueError("Percentile must be provided for percentile mosaic method")
 
         max_workers = multiprocessing.cpu_count() // 2
@@ -170,7 +170,7 @@ def download_bands_pool(
             band_count=band_count,
             s2_scene_size=s2_scene_size,
             max_workers=max_workers,
-            percentile=float(percentile),
+            percentile_value=float(percentile_value),
         )
 
     if mosaic_method == "mean":
@@ -394,7 +394,7 @@ def validate_inputs(
     no_data_threshold: Union[float, None],
     required_bands: List[str],
     grid_id: str,
-    percentile: Optional[float],
+    percentile_value: Optional[float],
 ) -> None:
     if not grid_id.isalnum() or not grid_id.isupper():
         raise ValueError(
@@ -411,7 +411,7 @@ def validate_inputs(
                 "Median mosaic method is deprecated, use percentile with 50th percentile instead"
             )
             mosaic_method = MOSAIC_PERCENTILE
-            percentile = 50.0
+            percentile_value = 50.0
         else:
             raise ValueError(
                 f"Invalid mosaic method: {mosaic_method}. Must be one of {VALID_MOSAIC_METHODS}"
@@ -446,16 +446,16 @@ def validate_inputs(
         raise ValueError("Cannot use visual band with other bands, must be used alone")
 
     if mosaic_method != MOSAIC_PERCENTILE:
-        if percentile is not None:
+        if percentile_value is not None:
             raise ValueError(
-                f"Percentile is only valid for percentile mosaic method, got {percentile}"
+                f"percentile_value is only valid for percentile mosaic method, got {percentile_value}"
             )
 
     if mosaic_method == MOSAIC_PERCENTILE:
-        if percentile is None:
-            raise ValueError("Percentile must be provided for percentile mosaic method")
-        if percentile < 0 or percentile > 100:
-            raise ValueError(f"Percentile must be between 0 and 100, got {percentile}")
+        if percentile_value is None:
+            raise ValueError("percentile_value must be provided for percentile mosaic method")
+        if percentile_value < 0 or percentile_value > 100:
+            raise ValueError(f"percentile_value must be between 0 and 100, got {percentile_value}")
 
 
 def get_output_path(

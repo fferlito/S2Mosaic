@@ -13,7 +13,7 @@ def calculate_percentile_mosaic(
     s2_scene_size: int,
     chunk_size: int = 100,
     max_workers: int = 8,
-    percentile: float = 50.0,
+    percentile_value: float = 50.0,
 ) -> np.ndarray:
     """
     Memory-efficient percentile calculation processing row chunks in parallel.
@@ -34,7 +34,7 @@ def calculate_percentile_mosaic(
         all_scene_data=all_scene_data,
         valid_pixel_masks=valid_pixel_masks,
         band_count=band_count,
-        percentile=percentile,
+        percentile_value=percentile_value,
     )
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -54,7 +54,7 @@ def process_row_chunk(
     all_scene_data: List[np.ndarray],
     valid_pixel_masks: List[np.ndarray],
     band_count: int,
-    percentile: float,
+    percentile_value: float,
 ) -> np.ndarray:
     """
     Process a chunk of rows to calculate percentile values.
@@ -65,6 +65,7 @@ def process_row_chunk(
         valid_pixel_masks: List of mask arrays (height, width)
         band_count: Number of bands
         scene_size: Full scene size (width)
+        percentile_value: Percentile value to calculate (0-100)
 
     Returns:
         Percentile values for this row chunk (bands, chunk_height, scene_width)
@@ -94,6 +95,6 @@ def process_row_chunk(
     all_nan_mask = np.all(np.isnan(masked_chunk), axis=0)
     masked_chunk = np.where(all_nan_mask, 0.0, masked_chunk)
 
-    chunk_percentile = nanquantile(masked_chunk, percentile/100, axis=0)
+    chunk_percentile = nanquantile(masked_chunk, percentile_value/100, axis=0)
 
     return chunk_percentile.astype(np.float32)

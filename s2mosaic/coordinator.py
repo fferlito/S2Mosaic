@@ -37,7 +37,7 @@ def mosaic(
     ocm_inference_dtype: str = "bf16",
     debug_cache: bool = False,
     additional_query: Dict[str, Any] = {"eo:cloud_cover": {"lt": 100}},
-    percentile: Optional[float] = None,
+    percentile_value: Optional[float] = None,
 ) -> Tuple[np.ndarray, Dict[str, Any]]: ...
 
 
@@ -61,7 +61,7 @@ def mosaic(
     ocm_inference_dtype: str = "bf16",
     debug_cache: bool = False,
     additional_query: Dict[str, Any] = {"eo:cloud_cover": {"lt": 100}},
-    percentile: Optional[float] = None,
+    percentile_value: Optional[float] = None,
 ) -> Path: ...
 
 
@@ -84,7 +84,7 @@ def mosaic(
     ocm_inference_dtype: str = "bf16",
     debug_cache: bool = False,
     additional_query: Dict[str, Any] = {"eo:cloud_cover": {"lt": 100}},
-    percentile: Optional[float] = None,
+    percentile_value: Optional[float] = None,
 ) -> Union[Tuple[np.ndarray, Dict[str, Any]], Path]:
     """
     Create a Sentinel-2 mosaic for a specified grid and time range.
@@ -115,8 +115,8 @@ def mosaic(
         debug_cache (bool, optional): Whether to cache downloads for faster debugging. Defaults to False.
         additional_query (Dict[str, Any], optional): Additional query parameters for STAC API.
             Defaults to {"eo:cloud_cover": {"lt": 100}}.
-        percentile (Optional[float], optional): If provided, calculates the specified percentile mosaic.
-            must be used with `mosaic_method='percentile'`. Defaults to None.
+        percentile_value (Optional[float], optional): If provided, calculates the specified percentile mosaic.
+            must be used with `mosaic_method='percentile'`. Defaults to None, can be a value between 0 and 100.
 
     Returns:
         Union[Tuple[np.ndarray, Dict[str, Any]], Path]: If output_dir is None, returns a tuple
@@ -140,7 +140,7 @@ def mosaic(
         no_data_threshold=no_data_threshold,
         required_bands=required_bands,
         grid_id=grid_id,
-        percentile=percentile,
+        percentile_value=percentile_value,
     )
 
     start_date, end_date = define_dates(
@@ -200,7 +200,7 @@ def mosaic(
         ocm_inference_dtype=ocm_inference_dtype,
         debug_cache=debug_cache,
         coverage_mask=coverage_mask,
-        percentile=percentile,
+        percentile_value=percentile_value,
     )
     if "visual" in required_bands:
         required_bands = ["Red", "Green", "Blue"]
