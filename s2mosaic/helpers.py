@@ -1,16 +1,14 @@
 import logging
-import pickle
+import multiprocessing
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from functools import partial
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import geopandas as gpd
 import numpy as np
 import pandas as pd
-import pkg_resources
-import planetary_computer
 import pystac
 import pystac_client
 import rasterio as rio
@@ -20,127 +18,21 @@ from dateutil.relativedelta import relativedelta
 from omnicloudmask import predict_from_array
 from pandas import DataFrame
 from pystac.item_collection import ItemCollection
-from rasterio.windows import Window
 from tqdm.auto import tqdm
 
-from .mosaic_methods import calculate_median_mosaic_chunked
+from .data_reader import get_band_with_mask, get_full_band
+from .mosaic_methods import calculate_percentile_mosaic
 
+SORT_VALID_DATA = "valid_data"
+SORT_OLDEST = "oldest"
+SORT_NEWEST = "newest"
+SORT_CUSTOM = "custom"
+MOSAIC_MEAN = "mean"
+MOSAIC_FIRST = "first"
+MOSAIC_PERCENTILE = "percentile"
 
-def read_in_chunks(
-    href: str,
-    index: int,
-    mask: np.ndarray,
-    chunk_multiplier: int = 4,
-):
-    chunk_size = 512 * chunk_multiplier
-    with rio.open(href) as src:
-        height, width = src.height, src.width
-
-        mask = scipy.ndimage.zoom(
-            mask, (height / mask.shape[0], width / mask.shape[1]), order=0
-        )
-
-        all_data = np.zeros((height, width), dtype=np.uint16)
-        for row in range(0, height, chunk_size):
-            for col in range(0, width, chunk_size):
-                chunk_height = min(chunk_size, height - row)
-                chunk_width = min(chunk_size, width - col)
-
-                mask_chunk = mask[row : row + chunk_height, col : col + chunk_width]
-
-                if np.any(mask_chunk):
-                    window = Window(col, row, chunk_width, chunk_height)  # type: ignore
-                    data_chunk = src.read(index, window=window)
-
-                    masked_data = data_chunk * mask_chunk
-                    all_data[row : row + chunk_height, col : col + chunk_width] = (
-                        masked_data
-                    )
-
-        return all_data
-
-
-def get_band_with_mask(
-    href_and_index: tuple[str, int],
-    mask: np.ndarray,
-    attempt: int = 0,
-    debug_cache: bool = False,
-) -> Tuple[np.ndarray, Dict[str, Any]]:
-    """Download a S2 band in chunks that intersect with the mask"""
-    href = href_and_index[0]
-    index = href_and_index[1]
-    if debug_cache:
-        cache_path = Path("cache") / f"{href.split('/')[-1]}_{index}_10_masked.pkl"
-        cache_path.parent.mkdir(exist_ok=True)
-        if cache_path.exists():
-            with open(cache_path, "rb") as f:
-                result = pickle.load(f)
-            return result
-    try:
-        singed_href = planetary_computer.sign(href)
-        with rio.open(singed_href) as src:
-            array = read_in_chunks(
-                href=singed_href, index=index, mask=mask, chunk_multiplier=4
-            )
-            result = array, src.profile.copy()
-            if debug_cache:
-                with open(cache_path, "wb") as f:
-                    pickle.dump(result, f)
-
-            return result
-
-    except Exception as e:
-        print(e)
-        print(f"Failed to open {href}")
-        if attempt < 3:
-            print(f"Trying again {attempt+1}")
-            return get_band_with_mask(href_and_index, mask, attempt + 1)
-        else:
-            raise Exception(f"Failed to open {href}")
-
-
-def get_full_band(
-    href: str, attempt: int = 0, res: int = 10, debug_cache: bool = False
-) -> Tuple[np.ndarray, Dict[str, Any]]:
-    try:
-        singed_href = planetary_computer.sign(href)
-        spatial_ratio = res / 10
-
-        if debug_cache:
-            cache_path = Path("cache") / f"{href.split('/')[-1]}_{spatial_ratio}.pkl"
-            cache_path.parent.mkdir(exist_ok=True)
-            if cache_path.exists():
-                with open(cache_path, "rb") as f:
-                    result = pickle.load(f)
-                return result
-
-        if "TCI_10m" in href:
-            band_indexes = [1, 2, 3]
-        else:
-            band_indexes = [1]
-        with rio.open(singed_href) as src:
-            array = src.read(
-                band_indexes,
-                out_shape=(
-                    len(band_indexes),
-                    int(10980 / spatial_ratio),
-                    int(10980 / spatial_ratio),
-                ),
-            ).astype(np.uint16)
-            result = array, src.profile.copy()
-            if debug_cache:
-                with open(cache_path, "wb") as f:
-                    pickle.dump(result, f)
-            return result
-
-    except Exception as e:
-        print(e)
-        print(f"Failed to open {href}")
-        if attempt < 3:
-            print(f"Trying again {attempt+1}")
-            return get_full_band(href, attempt + 1)
-        else:
-            raise Exception(f"Failed to open {href}")
+VALID_SORT_METHODS = {SORT_VALID_DATA, SORT_OLDEST, SORT_NEWEST, SORT_CUSTOM}
+VALID_MOSAIC_METHODS = {MOSAIC_MEAN, MOSAIC_FIRST, MOSAIC_PERCENTILE}
 
 
 def download_bands_pool(
@@ -153,6 +45,7 @@ def download_bands_pool(
     ocm_inference_dtype: str = "bf16",
     debug_cache: bool = False,
     max_dl_workers: int = 4,
+    percentile: float | None = 50.0,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
 
     s2_scene_size = 10980
@@ -169,8 +62,8 @@ def download_bands_pool(
         band_count = len(required_bands)
         band_indexes = [1] * len(required_bands)
 
-    if mosaic_method in ["median"]:
-        # For median, we need to store all values for each pixel
+    if mosaic_method == MOSAIC_PERCENTILE:
+        # For percentile, we need to store all values for each pixel
         all_scene_data = []
         valid_pixel_masks = []
     else:
@@ -199,8 +92,10 @@ def download_bands_pool(
         # if method is first, only download valid, non cloudy pixels that have not been filled, else download all valid non cloudy pixels
         if mosaic_method == "first":
             combo_mask = (good_pixel_tracker == 0) & combo_mask
-
+        
+        
         good_pixel_tracker += combo_mask
+
 
         hrefs_and_indexes = [
             (item.assets[band].href, band_index)
@@ -208,7 +103,7 @@ def download_bands_pool(
         ]
 
         get_band_with_mask_partial = partial(
-            get_band_with_mask, mask=combo_mask, debug_cache=debug_cache
+            get_band_with_mask, mask=combo_mask, debug_cache=debug_cache,mosaic_method=mosaic_method
         )
 
         with ThreadPoolExecutor(max_workers=max_dl_workers) as executor:
@@ -230,8 +125,8 @@ def download_bands_pool(
         scene_data = np.array(bands)
 
         # Handle data accumulation based on method
-        if mosaic_method == "median":
-            # Store the scene data and mask for later median calculation
+        if mosaic_method == MOSAIC_PERCENTILE:
+            # Store the scene data and mask for later percentile calculation
             all_scene_data.append(scene_data)
             valid_pixel_masks.append(combo_mask)
         else:
@@ -263,12 +158,19 @@ def download_bands_pool(
     pbar.refresh()
     pbar.close()
 
-    if mosaic_method in ["median"]:
-        mosaic = calculate_median_mosaic_chunked(
-            all_scene_data,
-            valid_pixel_masks,
-            band_count,
-            s2_scene_size,
+    if mosaic_method in ["percentile"]:
+        if percentile is None:
+            raise ValueError("Percentile must be provided for percentile mosaic method")
+
+        max_workers = multiprocessing.cpu_count() // 2
+
+        mosaic = calculate_percentile_mosaic(
+            all_scene_data=all_scene_data,
+            valid_pixel_masks=valid_pixel_masks,
+            band_count=band_count,
+            s2_scene_size=s2_scene_size,
+            max_workers=max_workers,
+            percentile=float(percentile),
         )
 
     if mosaic_method == "mean":
@@ -447,9 +349,11 @@ def sort_items(items: DataFrame, sort_method: str) -> DataFrame:
 
 
 def get_extent_from_grid_id(grid_id: str) -> shapely.geometry.polygon.Polygon:
+
     S2_grid_file = Path(
-        pkg_resources.resource_filename("s2mosaic", "S2_grid/sentinel_2_index.gpkg")  # type: ignore
+        Path(__file__).resolve().parent / "S2_grid/sentinel_2_index.gpkg"
     )
+
     # Use SQLite query to filter by Name directly
     query = f"SELECT * FROM sentinel_2_index WHERE Name = '{grid_id}'"
 
@@ -484,24 +388,13 @@ def define_dates(
     return start_date, end_date
 
 
-SORT_VALID_DATA = "valid_data"
-SORT_OLDEST = "oldest"
-SORT_NEWEST = "newest"
-SORT_CUSTOM = "custom"
-MOSAIC_MEAN = "mean"
-MOSAIC_FIRST = "first"
-MOSAIC_MEDIAN = "median"
-
-VALID_SORT_METHODS = {SORT_VALID_DATA, SORT_OLDEST, SORT_NEWEST, SORT_CUSTOM}
-VALID_MOSAIC_METHODS = {MOSAIC_MEAN, MOSAIC_FIRST, MOSAIC_MEDIAN}
-
-
 def validate_inputs(
     sort_method: str,
     mosaic_method: str,
     no_data_threshold: Union[float, None],
     required_bands: List[str],
     grid_id: str,
+    percentile: Optional[float],
 ) -> None:
     if not grid_id.isalnum() or not grid_id.isupper():
         raise ValueError(
@@ -513,9 +406,16 @@ def validate_inputs(
             f"Invalid sort method: {sort_method}. Must be one of {VALID_SORT_METHODS}"
         )
     if mosaic_method not in VALID_MOSAIC_METHODS:
-        raise ValueError(
-            f"Invalid mosaic method: {mosaic_method}. Must be one of {VALID_MOSAIC_METHODS}"
-        )
+        if mosaic_method == "median":
+            logging.warning(
+                "Median mosaic method is deprecated, use percentile with 50th percentile instead"
+            )
+            mosaic_method = MOSAIC_PERCENTILE
+            percentile = 50.0
+        else:
+            raise ValueError(
+                f"Invalid mosaic method: {mosaic_method}. Must be one of {VALID_MOSAIC_METHODS}"
+            )
     if no_data_threshold is not None:
         if not (0.0 <= no_data_threshold <= 1.0):
             raise ValueError(
@@ -545,6 +445,18 @@ def validate_inputs(
     if "visual" in required_bands and len(required_bands) > 1:
         raise ValueError("Cannot use visual band with other bands, must be used alone")
 
+    if mosaic_method != MOSAIC_PERCENTILE:
+        if percentile is not None:
+            raise ValueError(
+                f"Percentile is only valid for percentile mosaic method, got {percentile}"
+            )
+
+    if mosaic_method == MOSAIC_PERCENTILE:
+        if percentile is None:
+            raise ValueError("Percentile must be provided for percentile mosaic method")
+        if percentile < 0 or percentile > 100:
+            raise ValueError(f"Percentile must be between 0 and 100, got {percentile}")
+
 
 def get_output_path(
     output_dir: Union[Path, str],
@@ -562,3 +474,4 @@ def get_output_path(
         f"{grid_id}_{start_date.strftime('%Y-%m-%d')}_to_{end_date.strftime('%Y-%m-%d')}_{sort_method}_{mosaic_method}_{bands_str}.tif"
     )
     return export_path
+

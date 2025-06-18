@@ -1,0 +1,127 @@
+import pickle
+from pathlib import Path
+from typing import Any, Dict, Tuple
+
+import numpy as np
+import planetary_computer
+import rasterio as rio
+import scipy
+from rasterio.windows import Window
+
+
+def read_in_chunks(
+    href: str,
+    index: int,
+    mask: np.ndarray,
+    chunk_multiplier: int = 4,
+):
+    chunk_size = 512 * chunk_multiplier
+    with rio.open(href) as src:
+        height, width = src.height, src.width
+
+        mask = scipy.ndimage.zoom(
+            mask, (height / mask.shape[0], width / mask.shape[1]), order=0
+        )
+
+        all_data = np.zeros((height, width), dtype=np.uint16)
+        for row in range(0, height, chunk_size):
+            for col in range(0, width, chunk_size):
+                chunk_height = min(chunk_size, height - row)
+                chunk_width = min(chunk_size, width - col)
+
+                mask_chunk = mask[row : row + chunk_height, col : col + chunk_width]
+
+                if np.any(mask_chunk):
+                    window = Window(col, row, chunk_width, chunk_height)  # type: ignore
+                    data_chunk = src.read(index, window=window)
+
+                    masked_data = data_chunk * mask_chunk
+                    all_data[row : row + chunk_height, col : col + chunk_width] = (
+                        masked_data
+                    )
+
+        return all_data
+
+
+def get_band_with_mask(
+    href_and_index: tuple[str, int],
+    mask: np.ndarray,
+    attempt: int = 0,
+    debug_cache: bool = False,
+    mosaic_method:str='',
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Download a S2 band in chunks that intersect with the mask"""
+    href = href_and_index[0]
+    index = href_and_index[1]
+    if debug_cache:
+        cache_path = Path("cache") / f"{href.split('/')[-1]}_{index}_{mosaic_method}_10_masked.pkl"
+        cache_path.parent.mkdir(exist_ok=True)
+        if cache_path.exists():
+            with open(cache_path, "rb") as f:
+                result = pickle.load(f)
+            return result
+    try:
+        singed_href = planetary_computer.sign(href)
+        with rio.open(singed_href) as src:
+            array = read_in_chunks(
+                href=singed_href, index=index, mask=mask, chunk_multiplier=4
+            )
+            result = array, src.profile.copy()
+            if debug_cache:
+                with open(cache_path, "wb") as f:
+                    pickle.dump(result, f)
+
+            return result
+
+    except Exception as e:
+        print(e)
+        print(f"Failed to open {href}")
+        if attempt < 3:
+            print(f"Trying again {attempt+1}")
+            return get_band_with_mask(href_and_index, mask, attempt + 1)
+        else:
+            raise Exception(f"Failed to open {href}")
+
+
+def get_full_band(
+    href: str, attempt: int = 0, res: int = 10, debug_cache: bool = False
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    try:
+        singed_href = planetary_computer.sign(href)
+        spatial_ratio = res / 10
+
+        if debug_cache:
+            cache_path = Path("cache") / f"{href.split('/')[-1]}_{spatial_ratio}.pkl"
+            cache_path.parent.mkdir(exist_ok=True)
+            if cache_path.exists():
+                with open(cache_path, "rb") as f:
+                    result = pickle.load(f)
+                return result
+
+        if "TCI_10m" in href:
+            band_indexes = [1, 2, 3]
+        else:
+            band_indexes = [1]
+        with rio.open(singed_href) as src:
+            array = src.read(
+                band_indexes,
+                out_shape=(
+                    len(band_indexes),
+                    int(10980 / spatial_ratio),
+                    int(10980 / spatial_ratio),
+                ),
+            ).astype(np.uint16)
+            result = array, src.profile.copy()
+            if debug_cache:
+                with open(cache_path, "wb") as f:
+                    pickle.dump(result, f)
+            return result
+
+    except Exception as e:
+        print(e)
+        print(f"Failed to open {href}")
+        if attempt < 3:
+            print(f"Trying again {attempt+1}")
+            return get_full_band(href, attempt + 1)
+        else:
+            raise Exception(f"Failed to open {href}")
