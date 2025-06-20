@@ -2,9 +2,11 @@
     "cSpell.words": [
         "dateutil",
         "gpkg",
+        "nanquantile",
         "ndarray",
         "ndimage",
         "normalised",
+        "numbagg",
         "omnicloudmask",
         "pystac",
         "relativedelta"
