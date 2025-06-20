@@ -1,20 +1,20 @@
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union, overload
-
+import logging
 import numpy as np
 
 from .frequent_coverage import get_frequent_coverage
 from .helpers import (
-    add_item_info,
     define_dates,
-    download_bands_pool,
     export_tif,
     get_extent_from_grid_id,
     get_output_path,
-    search_for_items,
-    sort_items,
     validate_inputs,
 )
+from .mosaic_core import download_bands_pool
+from .stac_utils import add_item_info, search_for_items, sort_items
+
+logger = logging.getLogger(__name__)
 
 
 @overload
@@ -38,6 +38,7 @@ def mosaic(
     debug_cache: bool = False,
     additional_query: Dict[str, Any] = {"eo:cloud_cover": {"lt": 100}},
     percentile_value: Optional[float] = None,
+    ignore_duplicate_items: bool = True,
 ) -> Tuple[np.ndarray, Dict[str, Any]]: ...
 
 
@@ -62,6 +63,7 @@ def mosaic(
     debug_cache: bool = False,
     additional_query: Dict[str, Any] = {"eo:cloud_cover": {"lt": 100}},
     percentile_value: Optional[float] = None,
+    ignore_duplicate_items: bool = True,
 ) -> Path: ...
 
 
@@ -85,6 +87,7 @@ def mosaic(
     debug_cache: bool = False,
     additional_query: Dict[str, Any] = {"eo:cloud_cover": {"lt": 100}},
     percentile_value: Optional[float] = None,
+    ignore_duplicate_items: bool = True,
 ) -> Union[Tuple[np.ndarray, Dict[str, Any]], Path]:
     """
     Create a Sentinel-2 mosaic for a specified grid and time range.
@@ -102,7 +105,7 @@ def mosaic(
             If None, the mosaic is not saved to disk and is returned instead. Defaults to None.
         sort_method (str, optional): Method to sort scenes. Options are "valid_data", "oldest", or "newest". Defaults to "valid_data".
         sort_function (Callable, optional): Custom sorting function. If provided, overrides sort_method.
-        mosaic_method (str, optional): Method to create the mosaic. Options are "mean", "first", or "percentile". Defaults to "mean".
+        mosaic_method (str, optional): Method to create the mosaic. Options are "mean", "first", "median" or "percentile". Defaults to "mean".
         duration_years (int, optional): Duration in years to add to the start date. Defaults to 0.
         duration_months (int, optional): Duration in months to add to the start date. Defaults to 0.
         duration_days (int, optional): Duration in days to add to the start date. Defaults to 0.
@@ -117,6 +120,7 @@ def mosaic(
             Defaults to {"eo:cloud_cover": {"lt": 100}}.
         percentile_value (Optional[float], optional): If provided, calculates the specified percentile mosaic.
             must be used with `mosaic_method='percentile'`. Defaults to None, can be a value between 0 and 100.
+        ignore_duplicate_items (bool, optional): Whether to remove duplicate scenes based on their IDs. Defaults to True.
 
     Returns:
         Union[Tuple[np.ndarray, Dict[str, Any]], Path]: If output_dir is None, returns a tuple
@@ -134,6 +138,19 @@ def mosaic(
     if sort_function:
         sort_method = "custom"
 
+    # If mosaic method is passed as "median", it is converted to "percentile" with a value of 50.0
+    if mosaic_method == "median":
+        if percentile_value is not None:
+            raise ValueError(
+                "percentile_value should not be set when using mosaic_method='median'."
+            )
+        mosaic_method = "percentile"
+        percentile_value = 50.0
+    logger.info(
+        f"Creating mosaic for grid {grid_id} from {start_year}-{start_month:02d}-{start_day:02d} "
+        f"to {duration_years} years, {duration_months} months, and {duration_days} days later "
+        f"using {mosaic_method} method with bands {required_bands}."
+    )
     validate_inputs(
         sort_method=sort_method,
         mosaic_method=mosaic_method,
@@ -142,6 +159,7 @@ def mosaic(
         grid_id=grid_id,
         percentile_value=percentile_value,
     )
+    logger.info("All inputs validated successfully.")
 
     start_date, end_date = define_dates(
         start_year,
@@ -168,14 +186,19 @@ def mosaic(
 
     bounds = get_extent_from_grid_id(grid_id)
 
+    logger.info(
+        f"Searching for scenes in grid {grid_id} within bounds {bounds} "
+        f"from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}."
+    )
     items = search_for_items(
         bounds=bounds.buffer(-0.05),
         grid_id=grid_id,
         start_date=start_date,
         end_date=end_date,
         additional_query=additional_query,
+        ignore_duplicate_items=ignore_duplicate_items,
     )
-
+    logger.info(f"Found {len(items)} scenes for grid {grid_id}.")
     if len(items) == 0:
         raise Exception(
             f"No scenes found for {grid_id} between {start_date.strftime('%Y-%m-%d')} and {end_date.strftime('%Y-%m-%d')}"
@@ -190,6 +213,8 @@ def mosaic(
         sorted_items = sort_items(items=items_with_orbits, sort_method=sort_method)
     else:
         sorted_items = sort_function(items=items_with_orbits)
+
+    logger.info(f"Sorted {len(sorted_items)} scenes using {sort_method} method.")
 
     mosaic, profile = download_bands_pool(
         sorted_scenes=sorted_items,
