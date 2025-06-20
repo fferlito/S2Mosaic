@@ -1,12 +1,15 @@
 import pickle
 from pathlib import Path
 from typing import Any, Dict, Tuple
+import logging
 
 import numpy as np
 import planetary_computer
 import rasterio as rio
-import scipy
 from rasterio.windows import Window
+import scipy
+
+logger = logging.getLogger(__name__)
 
 
 def read_in_chunks(
@@ -32,7 +35,7 @@ def read_in_chunks(
                 mask_chunk = mask[row : row + chunk_height, col : col + chunk_width]
 
                 if np.any(mask_chunk):
-                    window = Window(col, row, chunk_width, chunk_height)  # type: ignore
+                    window = Window(col, row, chunk_width, chunk_height)
                     data_chunk = src.read(index, window=window)
 
                     masked_data = data_chunk * mask_chunk
@@ -48,13 +51,17 @@ def get_band_with_mask(
     mask: np.ndarray,
     attempt: int = 0,
     debug_cache: bool = False,
-    mosaic_method:str='',
+    mosaic_method: str = "",
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     """Download a S2 band in chunks that intersect with the mask"""
     href = href_and_index[0]
     index = href_and_index[1]
     if debug_cache:
-        cache_path = Path("cache") / f"{href.split('/')[-1]}_{index}_{mosaic_method}_10_masked.pkl"
+        href_parts = href.split("/")
+        cache_path = (
+            Path("cache")
+            / f"{href_parts[-4]}_{href_parts[-1]}_{index}_{mosaic_method}_10_masked.pkl"
+        )
         cache_path.parent.mkdir(exist_ok=True)
         if cache_path.exists():
             with open(cache_path, "rb") as f:
@@ -74,13 +81,21 @@ def get_band_with_mask(
             return result
 
     except Exception as e:
-        print(e)
-        print(f"Failed to open {href}")
+        logger.error(f"Failed to open {href}: {e}")
         if attempt < 3:
-            print(f"Trying again {attempt+1}")
-            return get_band_with_mask(href_and_index, mask, attempt + 1)
+            logger.info(f"Retrying attempt {attempt + 1}/3")
+            if debug_cache:
+                logger.info("Debug cache is enabled, skipping cache for retry")
+            return get_band_with_mask(
+                href_and_index=href_and_index,
+                mask=mask,
+                attempt=attempt + 1,
+                debug_cache=False,
+                mosaic_method=mosaic_method,
+            )
         else:
-            raise Exception(f"Failed to open {href}")
+            logger.error(f"All retry attempts failed for {href}")
+            raise Exception(f"Failed to open {href} after {attempt + 1} attempts")
 
 
 def get_full_band(
@@ -91,7 +106,11 @@ def get_full_band(
         spatial_ratio = res / 10
 
         if debug_cache:
-            cache_path = Path("cache") / f"{href.split('/')[-1]}_{spatial_ratio}.pkl"
+            href_parts = href.split("/")
+            cache_path = (
+                Path("cache")
+                / f"{href_parts[-4]}_{href_parts[-1]}_{spatial_ratio}_{res}.pkl"
+            )
             cache_path.parent.mkdir(exist_ok=True)
             if cache_path.exists():
                 with open(cache_path, "rb") as f:
@@ -118,10 +137,14 @@ def get_full_band(
             return result
 
     except Exception as e:
-        print(e)
-        print(f"Failed to open {href}")
+        logger.error(f"Failed to open {href}: {e}")
         if attempt < 3:
-            print(f"Trying again {attempt+1}")
-            return get_full_band(href, attempt + 1)
+            logger.info(f"Retrying attempt {attempt + 1}/3")
+            if debug_cache:
+                logger.info("Debug cache is enabled, skipping cache for retry")
+            return get_full_band(
+                href=href, attempt=attempt + 1, res=res, debug_cache=False
+            )
         else:
-            raise Exception(f"Failed to open {href}")
+            logger.error(f"All retry attempts failed for {href}")
+            raise Exception(f"Failed to open {href} after {attempt + 1} attempts")
