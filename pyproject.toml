@@ -1,9 +1,12 @@
+[build-system]
+requires = ["setuptools >= 61.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "s2mosaic"
 authors = [{name = "Nick Wright", email = "nicholas.wright@dpird.wa.gov.au"}]
 dynamic = ["version"]
 description = "Python library for making cloud-free Sentinel-2 mosaics"
-readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "geopandas>=1.0.3",
@@ -12,9 +15,12 @@ dependencies = [
     "planetary-computer>=1.0.0",
     "pystac-client>=0.8.6",
 ]
+license = "MIT"
+readme = {file = "README.md", content-type = "text/markdown"}
+keywords = ["sentinel-2", "satellite", "mosaic", "remote-sensing"]
 
 [tool.setuptools.dynamic]
-version = {attr = "s2mosaic.__version__"}
+version = {attr = "s2mosaic.__version__.__version__"}
 
 [project.urls]
 Homepage = "https://github.com/DPIRD-DMA/S2Mosaic"
@@ -27,3 +33,4 @@ dev = [
     "jupyter>=1.1.1",
     "pytest>=8.4.0",
 ]
+

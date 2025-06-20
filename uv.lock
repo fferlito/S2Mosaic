@@ -3049,7 +3049,7 @@ wheels = [
 
 [[package]]
 name = "s2mosaic"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "geopandas" },
     { name = "numbagg" },
