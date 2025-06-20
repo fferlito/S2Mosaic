@@ -9,7 +9,7 @@ S2Mosaic is a Python package for creating cloud-free mosaics from Sentinel-2 sat
 
 - Create Sentinel-2 mosaics for specific grid areas and time ranges.
 - Flexible scene selection methods: by valid data percentage, oldest, or newest scenes.
-- Multiple mosaic creation methods: mean or first valid pixel.
+- Multiple mosaic creation methods: mean, arbitrary percentile, median or first valid pixel.
 - Support for different spectral bands, including visual (RGB) composites.
 - State-of-the-art cloud masking using the OmniCloudMask library.
 - Export mosaics as GeoTIFF files or return as NumPy arrays.
@@ -21,7 +21,7 @@ S2Mosaic is a Python package for creating cloud-free mosaics from Sentinel-2 sat
 
 ## Note 📝
 
-We use OmniCloudMask for state-of-the-art cloud and cloud shadow masking. OCM will run significantly faster if an available NVIDIA GPU is present.
+We use OmniCloudMask (OCM)for state-of-the-art cloud and cloud shadow masking. OCM will run significantly faster if an available NVIDIA GPU or MPS accelerator is present.
 
 ## Try in Colab
 
@@ -39,7 +39,10 @@ You can install S2Mosaic using pip:
 ```
 pip install s2mosaic
 ```
-
+Or with uv:
+```
+uv add s2mosaic
+```
 ## Usage Example 1 🚀
 
 Here's a basic example of how to use S2Mosaic:
@@ -97,7 +100,7 @@ Similar to the example above but with 16-bit red, green, blue, and NIR bands ret
 S2Mosaic provides several options for customizing the mosaic creation process:
 
 - `sort_method`: Choose between "valid_data", "oldest", or "newest" to determine scene selection priority.
-- `mosaic_method`: Use "mean" for an average of valid pixels or "first" to use the first valid pixel.
+- `mosaic_method`: Use "mean" for an average of valid pixels, "percentile" with "percentile_value" for more particular merging, or "first" to use the first valid pixel.
 - `required_bands`: Specify which spectral bands to include in the mosaic. Use ["visual"] for an RGB composite.
 - `no_data_threshold`: Set the threshold for considering a pixel as no-data. Set to None to process all scenes.
 - `ocm_batch_size`: Set the batch size for OmniCloudMask inference (default: 6).
