@@ -17,6 +17,8 @@ S2Mosaic is a Python package for creating cloud-free mosaics from Sentinel-2 sat
 ## Changelog 📝
 ### Version 0.1.9:
     * Added a slight dilation to the no data mask to remove diagonal no data pixels from scene edges.
+### version 1.0.0
+    * Added support for percentile and median mosaic options and minor optimizations.
 
 
 ## Note 📝
