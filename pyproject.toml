@@ -34,3 +34,5 @@ dev = [
     "pytest>=8.4.0",
 ]
 
+[tool.setuptools]
+packages = ["s2mosaic"]
