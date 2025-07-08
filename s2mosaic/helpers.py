@@ -40,12 +40,10 @@ def get_extent_from_grid_id(grid_id: str) -> Polygon:
         "Please reinstall the package"
     )
 
-    # Use SQLite query to filter by Name directly
-    query = f"SELECT * FROM sentinel_2_index WHERE Name = '{grid_id}'"
-
     try:
-        # Read only the matching row directly from the gpkg
-        grid_entry = gpd.read_file(S2_grid_file, sql=query)
+        # Read the entire GeoPackage and filter in memory
+        grid_df = gpd.read_file(S2_grid_file)
+        grid_entry = grid_df[grid_df["Name"] == grid_id]
 
         return_count = grid_entry.shape[0]
 
@@ -54,16 +52,14 @@ def get_extent_from_grid_id(grid_id: str) -> Polygon:
                 f"Grid {grid_id} not found. It should be in the format '50HMH'. "
                 "For more info on the S2 grid system visit https://sentiwiki.copernicus.eu/web/s2-products"
                 f"View a map of the S2 grid at https://dpird-dma.github.io/Sentinel-2-grid-explorer/"
-                f"Query: {query}"
                 f"File: {S2_grid_file}"
-                f"Gdf: {gpd.read_file(S2_grid_file).head(5)}"
+                f"Gdf: {grid_df.head(5)}"
             )
         assert return_count == 1, (
             f"Multiple entries found for grid {grid_id}. "
             "This should not happen, please check the S2 grid file."
-            f"Query: {query}"
             f"File: {S2_grid_file}"
-            f"Gdf: {gpd.read_file(S2_grid_file).head(5)}"
+            f"Gdf: {grid_df.head(5)}"
         )
 
         return grid_entry.iloc[0].geometry
