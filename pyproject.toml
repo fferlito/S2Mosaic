@@ -15,7 +15,8 @@ dependencies = [
     "planetary-computer>=1.0.0",
     "pystac-client>=0.8.6",
 ]
-license = "MIT"
+[project]
+license = { text = "MIT" }
 readme = {file = "README.md", content-type = "text/markdown"}
 keywords = ["sentinel-2", "satellite", "mosaic", "remote-sensing"]
 
